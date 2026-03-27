@@ -14,10 +14,16 @@ cd collab-cli && cargo build --release
 cp target/release/collab ~/bin/
 ```
 
-Add to `~/.zshrc`:
+Add to `~/.zshrc` or `~/.bashrc` (Linux/Mac):
 ```bash
 export PATH="$HOME/bin:$PATH"
-export COLLAB_SERVER=http://kali:8000  # or wherever your server is
+export COLLAB_SERVER=http://kali:8000
+```
+
+Or `$PROFILE` (Windows PowerShell):
+```powershell
+$env:PATH = "$env:USERPROFILE\bin;$env:PATH"
+$env:COLLAB_SERVER = "http://kali:8000"
 ```
 
 ---
