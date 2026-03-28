@@ -234,12 +234,25 @@ impl CollabClient {
     }
 
     async fn fetch_roster(&self) -> Result<Vec<WorkerInfo>> {
+        self.fetch_roster_pub().await
+    }
+
+    pub async fn fetch_roster_pub(&self) -> Result<Vec<WorkerInfo>> {
         let url = format!("{}/roster", self.base_url);
         let response = self.client.get(&url).send().await?;
         if !response.status().is_success() {
             anyhow::bail!("Server error: {}", response.status());
         }
         Ok(response.json::<Vec<WorkerInfo>>().await?)
+    }
+
+    pub async fn fetch_history_pub(&self, instance_id: &str) -> Result<Vec<Message>> {
+        let url = format!("{}/history/{}", self.base_url, instance_id);
+        let response = self.client.get(&url).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("Server error: {}", response.status());
+        }
+        Ok(response.json::<Vec<Message>>().await?)
     }
 
     pub async fn show_history(&self, filter_instance: Option<&str>) -> Result<()> {

@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 mod client;
+mod monitor;
 
 use client::CollabClient;
 
@@ -103,6 +104,13 @@ enum Commands {
     /// Show active workers (who's heartbeating or has sent messages recently)
     Roster,
 
+    /// Live TUI monitor showing roster and message activity
+    Monitor {
+        /// Refresh interval in seconds (default: 2)
+        #[arg(short, long, default_value = "2")]
+        interval: u64,
+    },
+
     /// Print the path to the config file
     ConfigPath,
 }
@@ -168,6 +176,9 @@ async fn main() -> Result<()> {
         Commands::History { filter } => {
             let filter_id = filter.as_deref().map(|s| s.trim_start_matches('@'));
             client.show_history(filter_id).await?;
+        }
+        Commands::Monitor { interval } => {
+            monitor::run(&server, &instance_id, interval).await?;
         }
         Commands::Roster | Commands::ConfigPath => unreachable!(),
     }
