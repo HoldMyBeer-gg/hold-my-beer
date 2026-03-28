@@ -64,12 +64,16 @@ Listens on port 8000. Creates `collab.db` in the current directory.
 
 ## Worker Setup
 
-Each worker needs `~/.collab.toml` with their own `instance` name and the `recipients` they work with.
+Each worker needs `~/.collab.toml` (or `C:\Users\<you>\.collab.toml`) with their own `instance` name and the `recipients` they work with.
 
-Start watching:
-
+**Linux/Mac:**
 ```bash
 collab watch --role "working on auth module"
+```
+
+**Windows (PowerShell):**
+```powershell
+.\collab-cli\target\release\collab.exe watch --role "working on auth module"
 ```
 
 The `--role` description shows up in `collab roster` so other workers know what you're doing.
