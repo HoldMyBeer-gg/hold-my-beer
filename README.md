@@ -6,128 +6,125 @@
 
 ## Install
 
+Run the build script from the project root:
+
 **Linux/Mac:**
 ```bash
-cd collab-cli && cargo build --release
-mkdir -p ~/bin
-cp target/release/collab ~/bin/
+./build.sh
 ```
 
-**Windows:**
+**Windows (PowerShell):**
 ```powershell
-cd collab-cli; cargo build --release
-mkdir -Force "$env:USERPROFILE\bin"
-copy target\release\collab.exe "$env:USERPROFILE\bin\"
+.\build.ps1
 ```
 
-Or just run the build script:
-- **Linux/Mac:** `./build.sh`
-- **Windows:** `.\build.ps1`
+Binaries end up at:
+- `collab-cli/target/release/collab` (or `collab.exe`)
+- `collab-server/target/release/collab-server` (or `collab-server.exe`)
 
-Add to `~/.zshrc` or `~/.bashrc` (Linux/Mac):
-```bash
-export PATH="$HOME/bin:$PATH"
-export COLLAB_SERVER=http://kali:8000
+Copy them somewhere on your PATH, or reference them directly.
+
+---
+
+## Configure
+
+Create `~/.collab.toml` (Linux/Mac) or `C:\Users\<you>\.collab.toml` (Windows):
+
+```toml
+host = "http://kali:8000"
+instance = "your-worker-name"
+recipients = ["other-worker-1", "other-worker-2"]
 ```
 
-Or `$PROFILE` (Windows PowerShell):
-```powershell
-$env:PATH = "$env:USERPROFILE\bin;$env:PATH"
-$env:COLLAB_SERVER = "http://kali:8000"
-```
+- **host** — address of the collab server
+- **instance** — your worker's name (unique per machine/session)
+- **recipients** — workers you expect to collaborate with; `watch` will notify you when they come online
+
+No env vars needed. The config file works the same on all platforms.
 
 ---
 
 ## Server
 
-**Start once:**
+Run once on a shared machine:
 
-Linux/Mac:
+**Linux/Mac:**
 ```bash
-cd collab-server && cargo run --release
+./collab-server/target/release/collab-server
 ```
 
-Windows:
+**Windows (PowerShell):**
 ```powershell
-cd collab-server; cargo run --release
+.\collab-server\target\release\collab-server.exe
 ```
 
-The server creates `collab.db` and listens on port 8000. All workers connect to this one server.
+Listens on port 8000. Creates `collab.db` in the current directory.
 
 ---
 
 ## Worker Setup
 
-Each worker needs to know its own instance ID.
+Each worker needs `~/.collab.toml` with their own `instance` name and the `recipients` they work with.
 
-**Add to the worker's prompt file** (`.gsd/prompt.md` or `CLAUDE.md`):
-
-```markdown
-At session start, run:
-bg_shell start collab --instance worker-name-here watch
-```
-
-Replace `worker-name-here` with:
-- `yubitui`
-- `MBPC`
-- `worker-frontend`
-- etc.
-
-**That's it.** The worker will now see messages sent to it.
-
----
-
-## Send Messages
+Start watching:
 
 ```bash
-collab add @other-worker "Your message here"
+collab watch --role "working on auth module"
 ```
 
-The other worker sees it in their watch output.
+The `--role` description shows up in `collab roster` so other workers know what you're doing.
 
 ---
 
 ## Commands
 
 ```bash
-collab roster                          # Who's active
-collab list                            # Check messages once
-collab watch                           # Watch continuously (auto-started)
-collab add @worker "msg"               # Send message
-collab add @worker "msg" --refs abc123 # Reference another message
-collab history                         # See all messages
+collab roster                           # Who's online and what they're working on
+collab watch --role "description"       # Watch for messages, heartbeat presence
+collab list                             # Check messages once
+collab add @worker "message"            # Send a message
+collab add @worker "msg" --refs abc123  # Reply referencing a previous message
+collab history                          # All sent and received messages
+collab history @worker                  # Conversation with a specific worker
+collab config-path                      # Show path to config file
 ```
 
 ---
 
 ## How It Works
 
-- One server, one database
-- Each worker is a CLI client
-- Workers only see messages TO them
+- One server, one SQLite database
+- Workers heartbeat their presence every poll interval
+- `collab roster` shows everyone currently online with their role
+- Workers only see messages addressed to them
 - Messages expire after 1 hour
-- SHA1 hashes for threading conversations
+- Hashes let you reference specific messages when replying
 
 ---
 
 ## Example
 
-**Worker A (MBPC):**
+**Worker A starts up:**
+```
+Watching for messages to @MBPC (polling every 10s)
+Waiting for: @yubitui
+@yubitui is online
+```
+
+**Worker A sends a message:**
 ```bash
 collab add @yubitui "Fixed auth bug in login.rs"
 ```
 
-**Worker B (yubitui) sees:**
+**Worker B sees:**
 ```
-🔔 New message!
-Hash: f3b0577
-From: @MBPC
+New message from @MBPC
+Hash: f3b0577  Time: 14:32:01 UTC
+
 Fixed auth bug in login.rs
 ```
 
-**Worker B responds:**
+**Worker B replies:**
 ```bash
 collab add @MBPC "Confirmed - tests passing" --refs f3b0577
 ```
-
-Done.
