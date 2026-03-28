@@ -13,7 +13,7 @@ When multiple Claude Code workers are running in parallel on the same project, t
 
 ---
 
-## 1. Build
+## 1. Install
 
 **Linux/Mac:**
 ```bash
@@ -25,24 +25,7 @@ When multiple Claude Code workers are running in parallel on the same project, t
 .\build.ps1
 ```
 
----
-
-## 2. Install
-
-**Linux/Mac:**
-```bash
-sudo cp collab-cli/target/release/collab /usr/local/bin/
-sudo cp collab-server/target/release/collab-server /usr/local/bin/
-```
-
-**Windows (PowerShell):**
-```powershell
-New-Item -ItemType Directory -Force "$env:USERPROFILE\bin"
-Copy-Item collab-cli\target\release\collab.exe "$env:USERPROFILE\bin\"
-Copy-Item collab-server\target\release\collab-server.exe "$env:USERPROFILE\bin\"
-# Add to PATH permanently — open $PROFILE and add:
-# $env:PATH = "$env:USERPROFILE\bin;$env:PATH"
-```
+Both scripts use `cargo install` which builds and puts `collab` and `collab-server` directly on your PATH. No manual copying.
 
 ---
 

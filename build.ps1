@@ -1,34 +1,19 @@
-# Build script for Windows PowerShell
+# Build and install collab on Windows
 
-Write-Host "Building collab CLI and server..." -ForegroundColor Cyan
+Write-Host "Building and installing collab..." -ForegroundColor Cyan
 
-# Build CLI
-Write-Host "Building CLI..." -ForegroundColor Yellow
-Set-Location collab-cli
-cargo build --release
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "CLI build failed" -ForegroundColor Red
-    exit 1
-}
-Set-Location ..
+cargo install --path collab-cli
+if ($LASTEXITCODE -ne 0) { exit 1 }
 
-# Build Server
-Write-Host "Building server..." -ForegroundColor Yellow
-Set-Location collab-server
-cargo build --release
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Server build failed" -ForegroundColor Red
-    exit 1
-}
-Set-Location ..
+cargo install --path collab-server
+if ($LASTEXITCODE -ne 0) { exit 1 }
 
-Write-Host "Build complete!" -ForegroundColor Green
 Write-Host ""
-Write-Host "Binaries:" -ForegroundColor Cyan
-Write-Host "  CLI:    collab-cli\target\release\collab.exe"
-Write-Host "  Server: collab-server\target\release\collab-server.exe"
+Write-Host "Done. 'collab' and 'collab-server' are now on your PATH." -ForegroundColor Green
 Write-Host ""
-Write-Host "Config: create %USERPROFILE%\.collab.toml with:" -ForegroundColor Cyan
+Write-Host "Configure: create $env:USERPROFILE\.collab.toml" -ForegroundColor Cyan
 Write-Host "  host = `"http://your-server:8000`""
 Write-Host "  instance = `"your-worker-name`""
 Write-Host "  recipients = [`"other-worker`"]"
+Write-Host ""
+Write-Host "Run 'collab config-path' to confirm the config file location."

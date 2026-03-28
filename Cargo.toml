@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "collab-cli",
+    "collab-server",
+]
+resolver = "2"
