@@ -4,6 +4,8 @@
 
 When multiple Claude Code workers are running in parallel on the same project, they need a way to signal each other — "I fixed the auth bug", "migration is running, wait before deploying", "I'm online and ready." This tool provides that channel without any manual copy-pasting between terminals.
 
+**Live demo:** [Watch on YouTube](https://www.youtube.com/watch?v=6vEJNr8sASI)
+
 ---
 
 <details>
