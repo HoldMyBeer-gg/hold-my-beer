@@ -131,8 +131,7 @@ The `@` prefix on worker names is optional — `@worker` and `worker` are the sa
 
 ---
 
-<details>
-<summary><strong>Wiring into Claude Code (CLAUDE.md)</strong></summary>
+## Wiring into Claude Code (CLAUDE.md)
 
 Add this to your project's `CLAUDE.md` so each Claude Code worker starts watching automatically:
 
@@ -160,8 +159,6 @@ Never message yourself.
 ```
 
 Each worker's `~/.collab.toml` should already have their `instance` name and `recipients` configured — Claude Code will pick that up automatically.
-
-</details>
 
 ---
 
