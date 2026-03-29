@@ -30,6 +30,10 @@ MessageModal {
     height: 100%;
     width: 100%;
 }
+ComposeModal {
+    height: 100%;
+    width: 100%;
+}
 "#;
 
 // ── Send helper (runs inside worker future) ───────────────────────────────────
@@ -788,41 +792,15 @@ static COMPOSE_BINDINGS: &[KeyBinding] = &[
         show: false,
     },
     KeyBinding {
-        key: KeyCode::Char('k'),
-        modifiers: KeyModifiers::NONE,
-        action: "list_up",
-        description: "Up",
-        show: false,
-    },
-    KeyBinding {
         key: KeyCode::Down,
         modifiers: KeyModifiers::NONE,
         action: "list_down",
         description: "Down",
         show: false,
     },
-    KeyBinding {
-        key: KeyCode::Char('j'),
-        modifiers: KeyModifiers::NONE,
-        action: "list_down",
-        description: "Down",
-        show: false,
-    },
-    KeyBinding {
-        key: KeyCode::Char(' '),
-        modifiers: KeyModifiers::NONE,
-        action: "toggle",
-        description: "Toggle",
-        show: true,
-    },
-    KeyBinding {
-        key: KeyCode::Char('a'),
-        modifiers: KeyModifiers::NONE,
-        action: "select_all",
-        description: "All",
-        show: true,
-    },
 ];
+// Note: Char-key bindings (j/k/space/a) are intentionally absent — they are handled
+// in on_event so they don't get consumed before text input in the Message field.
 
 impl Widget for ComposeModal {
     fn widget_type_name(&self) -> &'static str { "ComposeModal" }
@@ -881,21 +859,48 @@ impl Widget for ComposeModal {
             return EventPropagation::Stop;
         }
 
-        // Raw key events for text input in message field
+        // Raw key events — handle here so char-key bindings (j/k/space/a) don't steal
+        // input from the Message field. Always consume to prevent leaking to background.
         if let Some(key) = event.downcast_ref::<KeyEvent>() {
             if self.sending.get() { return EventPropagation::Stop; }
-            if self.focused.get() == ComposeField::Message {
-                match key.code {
-                    KeyCode::Char(c) => {
+            let in_msg = self.focused.get() == ComposeField::Message;
+            let in_rcpt = self.focused.get() == ComposeField::Recipients;
+            match key.code {
+                KeyCode::Char(c) => {
+                    if in_msg {
                         self.message.borrow_mut().push(c);
-                        return EventPropagation::Stop;
+                    } else if in_rcpt {
+                        // Handle recipient-list char shortcuts here since they're not bindings
+                        match c {
+                            'k' => {
+                                let cur = self.list_cursor.get();
+                                if cur > 0 { self.list_cursor.set(cur - 1); }
+                            }
+                            'j' => {
+                                let len = self.workers.len();
+                                let cur = self.list_cursor.get();
+                                if cur + 1 < len { self.list_cursor.set(cur + 1); }
+                            }
+                            ' ' => {
+                                let cur = self.list_cursor.get();
+                                let mut sel = self.selected.borrow_mut();
+                                if let Some(v) = sel.get_mut(cur) { *v = !*v; }
+                            }
+                            'a' => {
+                                let mut sel = self.selected.borrow_mut();
+                                let any_unchecked = sel.iter().any(|&v| !v);
+                                for v in sel.iter_mut() { *v = any_unchecked; }
+                            }
+                            _ => {}
+                        }
                     }
-                    KeyCode::Backspace => {
-                        self.message.borrow_mut().pop();
-                        return EventPropagation::Stop;
-                    }
-                    _ => {}
+                    return EventPropagation::Stop;
                 }
+                KeyCode::Backspace => {
+                    if in_msg { self.message.borrow_mut().pop(); }
+                    return EventPropagation::Stop;
+                }
+                _ => {}
             }
         }
 
@@ -916,9 +921,9 @@ impl Widget for ComposeModal {
         }
 
         let n_workers = self.workers.len();
-        // dialog height: title(1) + pad(1) + list_header(1) + list rows + pad(1) + msg_label(1) + msg_row(1) + error(1) + footer(1)
+        // dialog height: border(1) + pad(1) + list_header(1) + list rows + pad(1) + msg_top(1) + msg_row(1) + msg_bot(1) + error(1) + footer(1) + border(1)
         let list_rows = n_workers.min(6);
-        let dlg_h = (8 + list_rows as u16).min(area.height.saturating_sub(2));
+        let dlg_h = (10 + list_rows as u16).min(area.height.saturating_sub(2));
         let dlg_w = ((area.width as usize * 8 / 10) as u16).min(90).max(50);
         let dlg_x = area.x + area.width.saturating_sub(dlg_w) / 2;
         let dlg_y = area.y + area.height.saturating_sub(dlg_h) / 2;
@@ -943,7 +948,7 @@ impl Widget for ComposeModal {
         let inner_x = dlg_x + 2;
         let inner_w = dlg_w.saturating_sub(4) as usize;
         let mut y = dlg_y + 2;
-        let max_y = dlg_y + dlg_h - 1;
+        let max_y = dlg_y + dlg_h - 2; // reserve bottom border row
 
         // ── Recipient list ─────────────────────────────────────────────────────
         let list_focused = self.focused.get() == ComposeField::Recipients;
@@ -996,29 +1001,54 @@ impl Widget for ComposeModal {
 
         // ── Message field ──────────────────────────────────────────────────────
         let msg_focused = self.focused.get() == ComposeField::Message;
-        let msg_lbl_style = if msg_focused {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else { dim };
+        let border_color = if msg_focused { Color::Cyan } else { Color::Rgb(60, 60, 80) };
+        let border_style = Style::default().fg(border_color).bg(Color::Rgb(15, 15, 30));
+        let msg_bg = if msg_focused {
+            Style::default().fg(Color::White).bg(Color::Rgb(20, 20, 50))
+        } else {
+            Style::default().fg(Color::Gray).bg(Color::Rgb(25, 25, 40))
+        };
+        // Top border with "Message" label
         if y < max_y {
-            buf.set_string(inner_x, y, "Message:", msg_lbl_style);
+            let label = if msg_focused { " Message " } else { " Message " };
+            let label_style = if msg_focused {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray).bg(Color::Rgb(60, 60, 80))
+            };
+            let box_w = inner_w as u16;
+            buf.set_string(inner_x, y, "╭", border_style);
+            buf.set_string(inner_x + box_w - 1, y, "╮", border_style);
+            let label_x = inner_x + 1 + (box_w.saturating_sub(2).saturating_sub(label.len() as u16)) / 2;
+            let dash_end = label_x - inner_x - 1;
+            for i in 1..=dash_end { buf.set_string(inner_x + i, y, "─", border_style); }
+            buf.set_string(label_x, y, label, label_style);
+            let after = label_x + label.len() as u16;
+            for i in after..inner_x + box_w - 1 { buf.set_string(i, y, "─", border_style); }
             y += 1;
         }
+        // Input row
         if y < max_y {
             let msg = self.message.borrow();
-            let field_w = inner_w;
+            let field_w = inner_w.saturating_sub(2); // inside the box borders
             let display = if msg_focused {
                 let s = tail_chars(&msg, field_w.saturating_sub(1));
                 format!("{}|", s)
             } else {
                 tail_chars(&msg, field_w)
             };
-            let msg_bg = if msg_focused {
-                Style::default().fg(Color::White).bg(Color::Rgb(20, 20, 50))
-            } else {
-                Style::default().fg(Color::White)
-            };
-            fill_line(buf, inner_x, y, inner_w as u16, msg_bg);
-            buf.set_string(inner_x, y, &display, msg_bg);
+            buf.set_string(inner_x, y, "│", border_style);
+            fill_line(buf, inner_x + 1, y, field_w as u16, msg_bg);
+            buf.set_string(inner_x + 1, y, &display, msg_bg);
+            buf.set_string(inner_x + inner_w as u16 - 1, y, "│", border_style);
+            y += 1;
+        }
+        // Bottom border
+        if y < max_y {
+            let box_w = inner_w as u16;
+            buf.set_string(inner_x, y, "╰", border_style);
+            buf.set_string(inner_x + box_w - 1, y, "╯", border_style);
+            for i in 1..box_w - 1 { buf.set_string(inner_x + i, y, "─", border_style); }
         }
 
         // ── Error line ─────────────────────────────────────────────────────────
@@ -1032,7 +1062,7 @@ impl Widget for ComposeModal {
         // ── Footer ─────────────────────────────────────────────────────────────
         let hint = " [Tab] Switch  [↑↓] Navigate  [Space] Toggle  [Enter] Send  [Esc] Cancel ";
         let hint_x = dlg_x + dlg_w.saturating_sub(hint.len() as u16) / 2;
-        buf.set_string(hint_x, dlg_y + dlg_h - 1, &clip(hint, dlg_w as usize), dim);
+        buf.set_string(hint_x, dlg_y + dlg_h - 2, &clip(hint, dlg_w as usize), dim);
     }
 }
 
