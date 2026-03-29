@@ -284,22 +284,19 @@ impl CollabClient {
         let last_read = state.last_read.get(&self.instance_id).copied();
 
         match messages_r {
-            Ok(mut messages) => {
+            Ok(all_messages) => {
+                // Update last_read from the first fetch before filtering, so we don't
+                // make a second request (which could mark new messages as read before showing them)
+                if let Some(newest) = all_messages.iter().map(|m| m.timestamp).max() {
+                    let current = last_read.unwrap_or(DateTime::<Utc>::MIN_UTC);
+                    if newest > current {
+                        state.last_read.insert(self.instance_id.clone(), newest);
+                        save_read_state(&state);
+                    }
+                }
+                let mut messages = all_messages;
                 if let Some(since) = last_read {
                     messages.retain(|m| m.timestamp > since);
-                }
-                // Update read state
-                let url = format!("{}/messages/{}", self.base_url, self.instance_id);
-                if let Ok(resp) = self.auth(self.client.get(&url)).send().await {
-                    if let Ok(all_msgs) = resp.json::<Vec<Message>>().await {
-                        if let Some(newest) = all_msgs.iter().map(|m| m.timestamp).max() {
-                            let current = last_read.unwrap_or(DateTime::<Utc>::MIN_UTC);
-                            if newest > current {
-                                state.last_read.insert(self.instance_id.clone(), newest);
-                                save_read_state(&state);
-                            }
-                        }
-                    }
                 }
                 if messages.is_empty() {
                     println!("No unread messages.");
