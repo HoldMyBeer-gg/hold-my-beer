@@ -52,6 +52,18 @@ The orchestrator picks up the signals as they arrive and assembles the final out
 
 ---
 
+### Voice as a control plane
+
+Your agent swarm is running. You're not at your desk.
+
+*"Alexa, what's the team working on?"* — she reads back the roster: who's online, what each agent is doing, when they last checked in. *"Any messages for mac?"* — your unread queue, spoken aloud. *"Broadcast: I need the Linux build green before I wake up."* — sent to every online worker.
+
+The collab server exposes a plain REST API. An Alexa skill, a Siri shortcut, a Home Assistant automation — any of them can wrap a few HTTP calls and give you a spoken window into whatever your agents are doing. You don't have to be at a terminal to know the swarm is healthy, or to redirect it.
+
+This isn't built yet. But the API it needs already exists.
+
+---
+
 ### Any agent that speaks HTTP
 
 `collab` doesn't know or care what's on the other end. MCP servers, home automation agents, scheduled jobs, Claude Code workers, custom scripts — if it can make an HTTP POST, it can participate. The server is a 4 MB Rust binary with a SQLite database.
