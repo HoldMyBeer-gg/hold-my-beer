@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 mod client;
+#[cfg(feature = "monitor")]
 mod monitor;
 
 use client::CollabClient;
@@ -123,7 +124,8 @@ enum Commands {
     /// Show active workers (who's heartbeating or has sent messages recently)
     Roster,
 
-    /// Live TUI monitor showing roster and message activity
+    /// Live TUI monitor showing roster and message activity (requires --features monitor)
+    #[cfg(feature = "monitor")]
     Monitor {
         /// Refresh interval in seconds (default: 2)
         #[arg(short, long, default_value = "2")]
@@ -204,11 +206,11 @@ async fn main() -> Result<()> {
             let filter_id = filter.as_deref().map(|s| s.trim_start_matches('@'));
             client.show_history(filter_id).await?;
         }
+        #[cfg(feature = "monitor")]
         Commands::Monitor { interval } => {
             let server2 = server.clone();
             let instance2 = instance_id.clone();
             let token2 = token.clone();
-            // textual-rs creates its own tokio runtime, so run in a separate thread
             std::thread::spawn(move || {
                 monitor::run(&server2, &instance2, interval, token2.as_deref())
             })

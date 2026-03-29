@@ -3,6 +3,8 @@ set -e
 
 echo "Building and installing collab..."
 
+# Workers: build without monitor (no textual-rs needed)
+# Add --features monitor if you want the live TUI monitor (requires textual-rs source)
 cargo install --path collab-cli
 cargo install --path collab-server
 
