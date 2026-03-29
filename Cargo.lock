@@ -385,6 +385,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "libc",
  "ratatui",
  "reqwest",
  "serde",

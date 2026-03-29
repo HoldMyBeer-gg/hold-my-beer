@@ -7,12 +7,14 @@ use std::path::PathBuf;
 
 // ── Terminal hyperlinks (OSC 8) ───────────────────────────────────────────────
 
-/// Return a hash formatted as an OSC 8 terminal hyperlink if COLLAB_REPO is set.
-/// Falls back to plain text otherwise.
+/// Return a hash formatted as an OSC 8 terminal hyperlink if COLLAB_REPO is set
+/// and stdout is a tty. Falls back to plain text otherwise.
 /// Link target: $COLLAB_REPO/commit/<hash>
 fn link_hash(hash: &str) -> String {
-    if let Ok(repo) = std::env::var("COLLAB_REPO") {
-        let repo = repo.trim_end_matches('/');
+    use std::os::unix::io::AsRawFd;
+    let is_tty = unsafe { libc::isatty(std::io::stdout().as_raw_fd()) } == 1;
+    if let (true, Ok(repo)) = (is_tty, std::env::var("COLLAB_REPO")) {
+        let repo = repo.trim_end_matches('/').to_string();
         let url = format!("{}/commit/{}", repo, hash);
         format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, hash)
     } else {
