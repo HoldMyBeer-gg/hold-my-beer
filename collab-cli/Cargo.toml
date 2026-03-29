@@ -21,4 +21,4 @@ tokio = { version = "1.40", features = ["full"] }
 toml = "0.8"
 ratatui = "0.30"
 crossterm = "0.29"
-textual-rs = { path = "../../textual-rs/crates/textual-rs" }
+textual-rs = "0.3.9"
