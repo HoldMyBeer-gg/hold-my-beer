@@ -8,21 +8,21 @@ use std::path::PathBuf;
 // ── Terminal hyperlinks (OSC 8) ───────────────────────────────────────────────
 
 /// Return the repo base URL for building commit links.
-/// Checks COLLAB_REPO env var first; falls back to auto-detecting from `git remote get-url origin`.
+/// Checks COLLAB_REPO env var first (checked on every call, not cached, so tests can override it).
+/// Falls back to auto-detecting from `git remote get-url origin`; that result is cached.
 /// Converts SSH remotes (git@github.com:user/repo.git) to HTTPS.
-/// Result is cached after first call.
 pub fn repo_url() -> Option<String> {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE.get_or_init(|| {
-        // Explicit env var takes priority
-        if let Ok(v) = std::env::var("COLLAB_REPO") {
-            let v = v.trim().trim_end_matches('/').to_string();
-            if !v.is_empty() {
-                return Some(v);
-            }
+    // Always check env var first so callers can override at runtime.
+    if let Ok(v) = std::env::var("COLLAB_REPO") {
+        let v = v.trim().trim_end_matches('/').to_string();
+        if !v.is_empty() {
+            return Some(v);
         }
-        // Auto-detect from git remote
+    }
+    // Fall back to cached git remote detection.
+    use std::sync::OnceLock;
+    static GIT_REMOTE: OnceLock<Option<String>> = OnceLock::new();
+    GIT_REMOTE.get_or_init(|| {
         let out = std::process::Command::new("git")
             .args(["remote", "get-url", "origin"])
             .output()
@@ -35,8 +35,7 @@ pub fn repo_url() -> Option<String> {
         let url = if let Some(rest) = raw.strip_prefix("git@") {
             // git@github.com:user/repo.git  →  https://github.com/user/repo
             let rest = rest.trim_end_matches(".git");
-            let url = rest.replacen(':', "/", 1);
-            format!("https://{}", url)
+            format!("https://{}", rest.replacen(':', "/", 1))
         } else {
             // https://github.com/user/repo.git  →  https://github.com/user/repo
             raw.trim_end_matches(".git").to_string()

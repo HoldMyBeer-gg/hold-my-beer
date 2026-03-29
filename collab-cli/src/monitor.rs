@@ -1386,33 +1386,32 @@ fn put(buf: &mut Buffer, x: u16, y: u16, s: &str, max_w: usize, style: Style) {
 }
 
 /// Render a hash as an OSC 8 hyperlink if a repo URL can be determined, otherwise plain text.
-/// Directly patches ratatui buffer cells with OSC 8 escape sequences.
+///
+/// The entire OSC-wrapped hash string is placed in the first cell, and all subsequent cells are
+/// marked `skip=true`. This avoids the ratatui diff bug where stuffing escape sequences into a
+/// cell symbol inflates `symbol.width()`, causing `to_skip` to skip adjacent cells and corrupt
+/// the rendered output.
+///
 /// Returns the number of terminal columns consumed.
 fn render_hash_link(buf: &mut Buffer, x: u16, y: u16, hash: &str, style: Style) -> u16 {
     let width = hash.chars().count() as u16;
-    buf.set_string(x, y, hash, style);
     if let Some(repo) = crate::client::repo_url() {
         let url = format!("{}/commit/{}", repo, hash);
-        let open = format!("\x1b]8;;{}\x1b\\", url);
-        let close = "\x1b]8;;\x1b\\".to_string();
-        // Patch first cell: prepend OSC 8 open sequence before the visible char
-        if width > 0 {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                let sym = cell.symbol().to_string();
-                cell.set_symbol(&format!("{}{}", open, sym));
+        // Full OSC 8 link: open + all hash chars + close, stored in cell 0.
+        let linked = format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, hash);
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_symbol(&linked).set_style(style);
+        }
+        // Mark continuation cells as skip so ratatui never overwrites them.
+        // The terminal will have already advanced the cursor past them when it
+        // printed the visible hash chars from the first cell's symbol.
+        for i in 1..width {
+            if let Some(cell) = buf.cell_mut((x + i, y)) {
+                cell.set_symbol(" ").set_style(style).set_skip(true);
             }
         }
-        // Patch last cell: append OSC 8 close sequence after the visible char
-        let last_x = x + width.saturating_sub(1);
-        if width == 1 {
-            if let Some(cell) = buf.cell_mut((x, y)) {
-                let sym = cell.symbol().to_string();
-                cell.set_symbol(&format!("{}{}", sym, close));
-            }
-        } else if let Some(cell) = buf.cell_mut((last_x, y)) {
-            let sym = cell.symbol().to_string();
-            cell.set_symbol(&format!("{}{}", sym, close));
-        }
+    } else {
+        buf.set_string(x, y, hash, style);
     }
     width
 }
@@ -1509,23 +1508,28 @@ mod tests {
         let hash = "abc1234def5678901234567890123456abcd1234";
         render_hash_link(&mut buf, 0, 0, hash, Style::default());
 
+        // Entire OSC 8 link (open + hash + close) lives in the first cell.
         let first = buf.cell((0, 0)).unwrap().symbol().to_string();
-        let last = buf.cell((hash.len() as u16 - 1, 0)).unwrap().symbol().to_string();
-
         assert!(first.contains("\x1b]8;;"), "first cell missing OSC 8 open: {:?}", first);
         assert!(first.contains("https://github.com/test/repo/commit/"), "first cell missing URL: {:?}", first);
-        assert!(last.contains("\x1b]8;;\x1b\\"), "last cell missing OSC 8 close: {:?}", last);
+        assert!(first.contains(hash), "first cell missing hash text: {:?}", first);
+        assert!(first.contains("\x1b]8;;\x1b\\"), "first cell missing OSC 8 close: {:?}", first);
+
+        // Continuation cells are marked skip.
+        let last = buf.cell((hash.len() as u16 - 1, 0)).unwrap();
+        assert!(last.skip, "last continuation cell should be skip=true");
+
         std::env::remove_var("COLLAB_REPO");
     }
 
     #[test]
-    fn render_hash_link_plain_when_no_repo() {
-        std::env::remove_var("COLLAB_REPO");
+    fn render_hash_link_contains_hash_text() {
+        // Regardless of whether a repo URL is detected, the hash text must appear in the output.
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
         render_hash_link(&mut buf, 0, 0, "abc1234", Style::default());
         let first = buf.cell((0, 0)).unwrap().symbol().to_string();
-        assert_eq!(first, "a");
+        assert!(first.contains("abc1234"), "first cell should contain hash text: {:?}", first);
     }
 }
 
