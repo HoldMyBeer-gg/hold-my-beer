@@ -5,6 +5,21 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+// ── Terminal hyperlinks (OSC 8) ───────────────────────────────────────────────
+
+/// Return a hash formatted as an OSC 8 terminal hyperlink if COLLAB_REPO is set.
+/// Falls back to plain text otherwise.
+/// Link target: $COLLAB_REPO/commit/<hash>
+fn link_hash(hash: &str) -> String {
+    if let Ok(repo) = std::env::var("COLLAB_REPO") {
+        let repo = repo.trim_end_matches('/');
+        let url = format!("{}/commit/{}", repo, hash);
+        format!("\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", url, hash)
+    } else {
+        hash.to_string()
+    }
+}
+
 // ── Read-state persistence ────────────────────────────────────────────────────
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -168,16 +183,17 @@ impl CollabClient {
         for msg in &messages {
             let replied = state.replied.contains(&msg.hash);
             println!("─────────────────────────────────────");
+            let short_hash = link_hash(&msg.hash[..7]);
             if replied {
-                println!("Hash: {} [replied]", &msg.hash[..7]);
+                println!("Hash: {} [replied]", short_hash);
             } else {
-                println!("Hash: {}", &msg.hash[..7]);
+                println!("Hash: {}", short_hash);
             }
             println!("From: @{}", msg.sender);
             println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
             if !msg.refs.is_empty() {
                 let short_refs: Vec<String> = msg.refs.iter()
-                    .map(|r| r.chars().take(7).collect())
+                    .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                     .collect();
                 println!("Refs: {}", short_refs.join(", "));
             }
@@ -202,7 +218,7 @@ impl CollabClient {
         match latest {
             None => anyhow::bail!("No messages found from @{}", sender),
             Some(msg) => {
-                println!("Replying to {} [{}] from @{}", msg.timestamp.format("%H:%M:%S UTC"), &msg.hash[..7], sender);
+                println!("Replying to {} [{}] from @{}", msg.timestamp.format("%H:%M:%S UTC"), link_hash(&msg.hash[..7]), sender);
                 self.add_message(sender, content, Some(vec![msg.hash.clone()])).await
             }
         }
@@ -230,13 +246,13 @@ impl CollabClient {
                     format!("@{} → you", msg.sender)
                 };
                 println!("─────────────────────────────────────");
-                println!("Hash: {}", &msg.hash[..7]);
+                println!("Hash: {}", link_hash(&msg.hash[..7]));
                 println!("From: @{}  To: @{}", msg.sender, msg.recipient);
                 println!("Dir:  {}", direction);
                 println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
                 if !msg.refs.is_empty() {
                     let short_refs: Vec<String> = msg.refs.iter()
-                        .map(|r| r.chars().take(7).collect())
+                        .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                         .collect();
                     println!("Refs: {}", short_refs.join(", "));
                 }
@@ -304,12 +320,12 @@ impl CollabClient {
                     println!("Unread messages for @{}:\n", self.instance_id);
                     for msg in &messages {
                         println!("─────────────────────────────────────");
-                        println!("Hash: {}", &msg.hash[..7]);
+                        println!("Hash: {}", link_hash(&msg.hash[..7]));
                         println!("From: @{}", msg.sender);
                         println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
                         if !msg.refs.is_empty() {
                             let short_refs: Vec<String> = msg.refs.iter()
-                                .map(|r| r.chars().take(7).collect())
+                                .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                                 .collect();
                             println!("Refs: {}", short_refs.join(", "));
                         }
@@ -378,7 +394,7 @@ impl CollabClient {
     ) -> Result<()> {
         let msg = self.send_message_raw(recipient, content, refs.unwrap_or_default()).await?;
         println!("✓ Message sent to @{}", recipient);
-        println!("  Hash: {}", &msg.hash[..7]);
+        println!("  Hash: {}", link_hash(&msg.hash[..7]));
         println!("  Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
         Ok(())
     }
@@ -396,7 +412,7 @@ impl CollabClient {
         println!("Broadcasting to {} worker(s)...", others.len());
         for worker in &others {
             match self.send_message_raw(&worker.instance_id, content, ref_hashes.clone()).await {
-                Ok(msg) => println!("  ✓ @{}  [{}]", worker.instance_id, &msg.hash[..7]),
+                Ok(msg) => println!("  ✓ @{}  [{}]", worker.instance_id, link_hash(&msg.hash[..7])),
                 Err(e)  => println!("  ✗ @{}  {}", worker.instance_id, e),
             }
         }
@@ -494,10 +510,10 @@ impl CollabClient {
 
                                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                                 println!("New message from @{}", msg.sender);
-                                println!("Hash: {}  Time: {}", &msg.hash[..7], msg.timestamp.format("%H:%M:%S UTC"));
+                                println!("Hash: {}  Time: {}", link_hash(&msg.hash[..7]), msg.timestamp.format("%H:%M:%S UTC"));
                                 if !msg.refs.is_empty() {
                                     let short_refs: Vec<String> = msg.refs.iter()
-                                        .map(|r| r.chars().take(7).collect())
+                                        .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                                         .collect();
                                     println!("Refs: {}", short_refs.join(", "));
                                 }
@@ -574,11 +590,11 @@ impl CollabClient {
             };
 
             println!("─────────────────────────────────────");
-            println!("{} [{}]", direction, &msg.hash[..7]);
+            println!("{} [{}]", direction, link_hash(&msg.hash[..7]));
             println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
             if !msg.refs.is_empty() {
                 let short_refs: Vec<String> = msg.refs.iter()
-                    .map(|r| r.chars().take(7).collect())
+                    .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                     .collect();
                 println!("Refs: {}", short_refs.join(", "));
             }
