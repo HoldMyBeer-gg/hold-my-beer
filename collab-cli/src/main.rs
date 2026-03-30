@@ -140,6 +140,9 @@ enum Commands {
         refs: Option<String>,
     },
 
+    /// Signal all running `collab watch` instances to exit gracefully
+    StopAll,
+
     /// View message history including sent and received messages
     History {
         /// Filter by conversation partner (e.g., @other_instance)
@@ -236,6 +239,9 @@ async fn main() -> Result<()> {
                 r.split(',').map(|s| s.trim().to_string()).collect()
             });
             client.broadcast(&message, ref_hashes).await?;
+        }
+        Commands::StopAll => {
+            client.stop_all().await?;
         }
         Commands::History { filter } => {
             let filter_id = filter.as_deref().map(|s| s.trim_start_matches('@'));

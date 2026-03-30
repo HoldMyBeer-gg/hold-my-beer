@@ -28,6 +28,11 @@ fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
+/// "all" is a reserved broadcast channel — any worker can send to it and everyone receives it.
+fn is_valid_recipient(s: &str) -> bool {
+    s == "all" || is_valid_identifier(s)
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MessageCreate {
     pub sender: String,
@@ -95,6 +100,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/history/:instance_id", get(get_history))
         .route("/roster", get(get_roster))
         .route("/presence/:instance_id", put(update_presence))
+        .route("/presence/:instance_id", delete(delete_presence))
         .route("/messages/cleanup", delete(cleanup_old_messages))
         .layer(axum::middleware::from_fn_with_state(
             shared_state.clone(),
@@ -134,7 +140,7 @@ async fn list_messages(
         r#"
         SELECT id, hash, sender, recipient, content, refs, timestamp
         FROM messages
-        WHERE recipient = ? AND timestamp >= ?
+        WHERE (recipient = ? OR recipient = 'all') AND timestamp >= ?
         ORDER BY timestamp DESC
         "#,
     )
@@ -322,6 +328,26 @@ async fn update_presence(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn delete_presence(
+    Path(instance_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Result<StatusCode, StatusCode> {
+    if instance_id.len() > MAX_INSTANCE_ID_LEN || !is_valid_identifier(&instance_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    sqlx::query("DELETE FROM presence WHERE instance_id = ?")
+        .bind(&instance_id)
+        .execute(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn create_message(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<MessageCreate>,
@@ -329,7 +355,7 @@ async fn create_message(
     if payload.sender.len() > MAX_INSTANCE_ID_LEN
         || payload.recipient.len() > MAX_INSTANCE_ID_LEN
         || !is_valid_identifier(&payload.sender)
-        || !is_valid_identifier(&payload.recipient)
+        || !is_valid_recipient(&payload.recipient)
         || payload.content.len() > MAX_CONTENT_LEN
         || payload.refs.len() > MAX_REFS_COUNT
         || payload.refs.iter().any(|r| r.len() > MAX_REF_LEN)

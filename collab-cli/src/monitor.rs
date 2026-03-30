@@ -49,6 +49,13 @@ async fn send_to_all(
 ) -> SendResult {
     let client = CollabClient::new(&server, &instance_id, token.as_deref());
     let refs = reply_hash.into_iter().collect::<Vec<_>>();
+    // If "all" is in the list, send a single broadcast message instead of fan-out.
+    if recipients.iter().any(|r| r == "all") {
+        return match client.send_message_raw("all", &content, refs).await {
+            Ok(msg) => Ok(msg.hash),
+            Err(e) => Err(format!("Failed sending broadcast: {}", e)),
+        };
+    }
     let mut last_hash = String::new();
     for recipient in &recipients {
         match client.send_message_raw(recipient, &content, refs.clone()).await {
@@ -188,7 +195,7 @@ impl MonitorScreen {
 
     fn open_compose(&self, ctx: &AppContext, reply_hash: Option<String>, reply_to: Option<String>) {
         let workers = self.workers.borrow().clone();
-        let others: Vec<WorkerInfo> = workers.into_iter()
+        let mut others: Vec<WorkerInfo> = workers.into_iter()
             .filter(|w| w.instance_id != self.instance_id)
             .collect();
         if others.is_empty() {
@@ -196,11 +203,28 @@ impl MonitorScreen {
             return;
         }
         *self.status_msg.borrow_mut() = None;
-        // Pre-select all; if replying, only pre-select the reply target
+
+        // For new messages (not replies), prepend @all broadcast option.
+        let is_reply = reply_to.is_some();
+        if !is_reply {
+            others.insert(0, WorkerInfo {
+                instance_id: "all".to_string(),
+                role: "broadcast to everyone".to_string(),
+                last_seen: chrono::Utc::now(),
+                message_count: 0,
+            });
+        }
+
+        // Pre-select all individuals by default; for replies only pre-select the target.
+        // @all is never pre-selected (user must opt in explicitly).
         let selected: Vec<bool> = others.iter().map(|w| {
-            match &reply_to {
-                Some(id) => &w.instance_id == id,
-                None => true,
+            if w.instance_id == "all" {
+                false
+            } else {
+                match &reply_to {
+                    Some(id) => &w.instance_id == id,
+                    None => true,
+                }
             }
         }).collect();
         let modal = ComposeModal::new(
@@ -368,29 +392,47 @@ impl Widget for MonitorScreen {
             return EventPropagation::Stop;
         }
 
-        // Mouse click → move cursor to clicked row; double-click opens modal
+        // Mouse events
         if let Some(m) = event.downcast_ref::<MouseEvent>() {
-            if matches!(m.kind, MouseEventKind::Down(MouseButton::Left)) {
-                let data_y = self.msg_data_start_y.get();
-                if data_y > 0 && m.row >= data_y {
-                    let display_idx = self.msg_scroll.get() + (m.row - data_y) as usize;
-                    let len = self.messages.borrow().len();
-                    if display_idx < len {
-                        let now = Instant::now();
-                        let is_double = self
-                            .last_click
-                            .borrow()
-                            .as_ref()
-                            .map(|(t, row)| *row == display_idx && now.duration_since(*t).as_millis() < 400)
-                            .unwrap_or(false);
-                        *self.last_click.borrow_mut() = Some((now, display_idx));
-                        self.msg_cursor.set(display_idx);
-                        if is_double {
-                            self.open_modal(ctx);
+            match m.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let data_y = self.msg_data_start_y.get();
+                    if data_y > 0 && m.row >= data_y {
+                        let display_idx = self.msg_scroll.get() + (m.row - data_y) as usize;
+                        let len = self.messages.borrow().len();
+                        if display_idx < len {
+                            let now = Instant::now();
+                            let is_double = self
+                                .last_click
+                                .borrow()
+                                .as_ref()
+                                .map(|(t, row)| *row == display_idx && now.duration_since(*t).as_millis() < 400)
+                                .unwrap_or(false);
+                            *self.last_click.borrow_mut() = Some((now, display_idx));
+                            self.msg_cursor.set(display_idx);
+                            if is_double {
+                                self.open_modal(ctx);
+                            }
+                            return EventPropagation::Stop;
                         }
-                        return EventPropagation::Stop;
                     }
                 }
+                MouseEventKind::ScrollUp => {
+                    let cur = self.msg_cursor.get();
+                    if cur > 0 {
+                        self.msg_cursor.set(cur - 1);
+                    }
+                    return EventPropagation::Stop;
+                }
+                MouseEventKind::ScrollDown => {
+                    let len = self.messages.borrow().len();
+                    let cur = self.msg_cursor.get();
+                    if len > 0 && cur + 1 < len {
+                        self.msg_cursor.set(cur + 1);
+                    }
+                    return EventPropagation::Stop;
+                }
+                _ => {}
             }
         }
 
@@ -589,7 +631,13 @@ impl Widget for MonitorScreen {
             let y = msg_panel_y + 3 + row_offset as u16;
             let is_cursor = display_idx == cursor;
 
-            let direction = if msg.recipient == self.instance_id {
+            let direction = if msg.recipient == "all" {
+                if msg.sender == self.instance_id {
+                    "you → @all [broadcast]".to_string()
+                } else {
+                    format!("@{} → @all [broadcast]", msg.sender)
+                }
+            } else if msg.recipient == self.instance_id {
                 format!("@{} → you", msg.sender)
             } else {
                 format!("you → @{}", msg.recipient)
@@ -690,6 +738,8 @@ struct ComposeModal {
     error: RefCell<Option<String>>,
     /// How many visible rows the recipient list has (updated each render)
     list_visible_rows: Cell<usize>,
+    /// Y of the first recipient data row; updated each render for click hit-testing.
+    list_data_start_y: Cell<u16>,
 }
 
 impl ComposeModal {
@@ -716,6 +766,7 @@ impl ComposeModal {
             sending: Cell::new(false),
             error: RefCell::new(None),
             list_visible_rows: Cell::new(4),
+            list_data_start_y: Cell::new(0),
         }
     }
 
@@ -850,6 +901,46 @@ impl Widget for ComposeModal {
     }
 
     fn on_event(&self, event: &dyn std::any::Any, ctx: &AppContext) -> EventPropagation {
+        // Mouse events — click to focus/toggle recipients, scroll wheel to navigate
+        if let Some(m) = event.downcast_ref::<MouseEvent>() {
+            if self.sending.get() { return EventPropagation::Stop; }
+            match m.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    let list_y = self.list_data_start_y.get();
+                    let visible = self.list_visible_rows.get();
+                    if list_y > 0 && (m.row as usize) >= list_y as usize
+                        && (m.row as usize) < list_y as usize + visible
+                    {
+                        let row_offset = (m.row - list_y) as usize;
+                        let idx = self.list_scroll.get() + row_offset;
+                        if idx < self.workers.len() {
+                            self.focused.set(ComposeField::Recipients);
+                            self.list_cursor.set(idx);
+                            let mut sel = self.selected.borrow_mut();
+                            if let Some(v) = sel.get_mut(idx) { *v = !*v; }
+                        }
+                        return EventPropagation::Stop;
+                    }
+                }
+                MouseEventKind::ScrollUp
+                    if self.focused.get() == ComposeField::Recipients =>
+                {
+                    let cur = self.list_cursor.get();
+                    if cur > 0 { self.list_cursor.set(cur - 1); }
+                    return EventPropagation::Stop;
+                }
+                MouseEventKind::ScrollDown
+                    if self.focused.get() == ComposeField::Recipients =>
+                {
+                    let len = self.workers.len();
+                    let cur = self.list_cursor.get();
+                    if cur + 1 < len { self.list_cursor.set(cur + 1); }
+                    return EventPropagation::Stop;
+                }
+                _ => {}
+            }
+        }
+
         // Send result
         if let Some(result) = event.downcast_ref::<WorkerResult<SendResult>>() {
             self.sending.set(false);
@@ -969,6 +1060,7 @@ impl Widget for ComposeModal {
         self.clamp_list_scroll();
         let scroll = self.list_scroll.get();
 
+        self.list_data_start_y.set(y);
         let sel = self.selected.borrow();
         for row in 0..visible {
             let idx = scroll + row;
@@ -1061,9 +1153,9 @@ impl Widget for ComposeModal {
         }
 
         // ── Footer ─────────────────────────────────────────────────────────────
-        let hint = " [Tab] Switch  [↑↓] Navigate  [Space] Toggle  [Enter] Send  [Esc] Cancel ";
-        let hint_x = dlg_x + dlg_w.saturating_sub(hint.len() as u16) / 2;
-        buf.set_string(hint_x, dlg_y + dlg_h - 2, &clip(hint, dlg_w as usize), dim);
+        // Drawn inside the inner area (inner_x / inner_w) to avoid overwriting side borders.
+        let hint = "Tab:switch  ↑↓:nav  Space:toggle  Enter:send  Esc:cancel";
+        buf.set_string(inner_x, dlg_y + dlg_h - 2, &clip(hint, inner_w), dim);
     }
 }
 
@@ -1219,6 +1311,23 @@ impl Widget for MessageModal {
             "page_down" => self.page_down(),
             _ => {}
         }
+    }
+
+    fn on_event(&self, event: &dyn std::any::Any, _ctx: &AppContext) -> EventPropagation {
+        if let Some(m) = event.downcast_ref::<MouseEvent>() {
+            match m.kind {
+                MouseEventKind::ScrollUp => {
+                    self.scroll_up();
+                    return EventPropagation::Stop;
+                }
+                MouseEventKind::ScrollDown => {
+                    self.scroll_down();
+                    return EventPropagation::Stop;
+                }
+                _ => {}
+            }
+        }
+        EventPropagation::Continue
     }
 
     fn render(&self, _ctx: &AppContext, area: Rect, buf: &mut Buffer) {

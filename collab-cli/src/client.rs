@@ -5,6 +5,9 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// Sentinel content broadcast to signal all `collab watch` instances to exit.
+pub const STOP_WATCH_SIGNAL: &str = "__COLLAB_STOP_WATCH__";
+
 // ── Terminal hyperlinks (OSC 8) ───────────────────────────────────────────────
 
 /// Return the repo base URL for building commit links.
@@ -218,6 +221,8 @@ impl CollabClient {
             let short_hash = link_hash(&msg.hash[..7]);
             if replied {
                 println!("Hash: {} [replied]", short_hash);
+            } else if msg.recipient == "all" {
+                println!("Hash: {} [broadcast]", short_hash);
             } else {
                 println!("Hash: {}", short_hash);
             }
@@ -430,23 +435,41 @@ impl CollabClient {
         Ok(())
     }
 
-    pub async fn broadcast(&self, content: &str, refs: Option<Vec<String>>) -> Result<()> {
-        let workers = self.fetch_roster_pub().await?;
-        let others: Vec<_> = workers.iter()
-            .filter(|w| w.instance_id != self.instance_id)
-            .collect();
-        if others.is_empty() {
-            println!("No other workers online.");
-            return Ok(());
-        }
-        let ref_hashes = refs.unwrap_or_default();
-        println!("Broadcasting to {} worker(s)...", others.len());
-        for worker in &others {
-            match self.send_message_raw(&worker.instance_id, content, ref_hashes.clone()).await {
-                Ok(msg) => println!("  ✓ @{}  [{}]", worker.instance_id, link_hash(&msg.hash[..7])),
-                Err(e)  => println!("  ✗ @{}  {}", worker.instance_id, e),
+    pub async fn delete_presence(&self) -> Result<()> {
+        let url = format!("{}/presence/{}", self.base_url, self.instance_id);
+        self.auth(self.client.delete(&url)).send().await?;
+        Ok(())
+    }
+
+    /// Broadcast the stop-watch signal and clear all roster presence entries.
+    pub async fn stop_all(&self) -> Result<()> {
+        // 1. Broadcast the stop-watch signal so watch loops exit.
+        let msg = self.send_message_raw("all", STOP_WATCH_SIGNAL, vec![]).await?;
+        println!("⛔ Stop signal broadcast to @all  [{}]", link_hash(&msg.hash[..7]));
+
+        // 2. Clear presence for all workers currently in the roster.
+        match self.fetch_roster_pub().await {
+            Ok(workers) => {
+                for worker in &workers {
+                    let url = format!("{}/presence/{}", self.base_url, worker.instance_id);
+                    let _ = self.auth(self.client.delete(&url)).send().await;
+                }
+                println!("  Cleared presence for {} worker(s) — roster is now empty.", workers.len());
             }
+            Err(e) => eprintln!("  Warning: could not clear roster: {}", e),
         }
+
+        println!("  Running `collab watch` instances will exit on next poll.");
+        Ok(())
+    }
+
+    pub async fn broadcast(&self, content: &str, refs: Option<Vec<String>>) -> Result<()> {
+        let ref_hashes = refs.unwrap_or_default();
+        let msg = self.send_message_raw("all", content, ref_hashes).await?;
+        println!("✓ Broadcast sent to @all");
+        println!("  Hash: {}", link_hash(&msg.hash[..7]));
+        println!("  Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
+        println!("  (visible to all workers on their next `collab list`)");
         Ok(())
     }
 
@@ -538,6 +561,13 @@ impl CollabClient {
 
                             for msg in &new_messages {
                                 seen_ids.insert(msg.id.clone());
+
+                                // Stop-watch signal: clear own presence and exit gracefully.
+                                if msg.content.trim() == STOP_WATCH_SIGNAL {
+                                    println!("⛔ Stop signal received from @{} — clearing presence and exiting.", msg.sender);
+                                    let _ = self.delete_presence().await;
+                                    return Ok(());
+                                }
 
                                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                                 println!("New message from @{}", msg.sender);
