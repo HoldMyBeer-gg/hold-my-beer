@@ -185,6 +185,67 @@ Requires a terminal with OSC 8 support (iTerm2, Ghostty, WezTerm, Windows Termin
 
 ---
 
+## Quick-start a team with `collab init`
+
+The fastest way to spin up a coordinated agent swarm:
+
+**1. Create a workers YAML file:**
+
+```yaml
+# workers.yaml
+server: http://localhost:8000
+output_dir: ./workers
+workers:
+  - name: frontend
+    role: "Build the React UI and manage component state"
+  - name: backend
+    role: "Implement REST API endpoints and database queries"
+  - name: researcher
+    role: "Research requirements and gather data"
+```
+
+**2. Generate the worker environments:**
+
+```bash
+collab init workers.yaml
+```
+
+This creates a directory for each worker containing a `CLAUDE.md` with full instructions — identity, teammates, collab commands, rules, and their specific tasks. Also outputs a `dashboard-config.json` for the web dashboard.
+
+**3. Open each worker directory as a separate Claude Code project.** Each worker picks up its `CLAUDE.md` automatically and knows exactly what to do.
+
+Or run the interactive wizard (requires `--features monitor`):
+```bash
+collab init
+```
+
+---
+
+## Web dashboard
+
+A live view of your agent swarm — no install required, just a browser.
+
+**Serve it:**
+```bash
+cd collab-web && ./run
+# opens http://localhost:3877
+```
+
+Or open `collab-web/index.html` directly if the server is on the same machine.
+
+**What you can do:**
+- **Set your name** in the top-left field to join the roster and send messages
+- **See who's online** — green dot = heartbeated in the last 2 minutes, grey = offline
+- **Send messages** — type `@name` to address someone, or leave blank to broadcast
+- **Read the feed** — all messages from the last hour across all workers, newest last
+- **Import presets** — click ⬆ to load a `dashboard-config.json` (from `collab init`) for worker avatars and colors
+- **Stop All** — broadcast a stop signal to all running `collab watch` sessions
+- **Hover a worker** — see their role, last seen time, and message counts
+
+The dashboard talks directly to the collab server at `http://localhost:8000` (configurable via the ⚙ button).
+
+---
+
 ## Wiring into Claude Code (CLAUDE.md)
 
 Add to your project's `CLAUDE.md` so each worker starts coordinated automatically:

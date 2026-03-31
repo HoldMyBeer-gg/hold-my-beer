@@ -98,8 +98,35 @@
       background: var(--surface); border: 1px solid var(--border);
       border-radius: 10px; padding: 2px 8px;
     }
-    #last-updated { color: var(--dim-text); opacity: .75;
+    #last-updated { color: var(--dim-text); opacity: .75; }
+    /* Inbox filter button */
+    #inbox-btn {
+      font-size: 12px; font-weight: 600; color: var(--dim-text);
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 2px 8px; cursor: pointer; flex-shrink: 0;
+      display: flex; align-items: center; gap: 5px;
+      transition: color var(--t), border-color var(--t), background var(--t);
     }
+    #inbox-btn:hover { color: var(--sub); border-color: var(--bhi); }
+    #inbox-btn[aria-pressed="true"] { color: #22d3ee; border-color: rgba(34,211,238,.4); background: rgba(34,211,238,.08); }
+    .inbox-badge {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 16px; height: 16px; border-radius: 8px; padding: 0 3px;
+      font-size: 10px; font-weight: 800; line-height: 1;
+      background: var(--danger); color: #fff;
+      transition: background var(--t);
+    }
+    #inbox-btn[aria-pressed="true"] .inbox-badge { background: #22d3ee; color: #080c18; }
+    .inbox-badge[data-n="0"] { background: var(--sur2); color: var(--dim); }
+    /* Reply button on message rows */
+    .msg-reply-btn {
+      display: none; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 4px; margin-left: auto; flex-shrink: 0;
+      font-size: 13px; color: var(--dim);
+      transition: color var(--t), background var(--t);
+    }
+    .msg-row:hover .msg-reply-btn { display: flex; }
+    .msg-reply-btn:hover { color: var(--text); background: var(--sur2); }
 
     .feed { flex: 1; overflow-y: auto; padding: 12px 0 8px; }
 
@@ -114,8 +141,9 @@
     /* ─── Message rows ────────────────────────────────────────────────────── */
     .msg-row { display: flex; gap: 12px; padding: 3px 18px; transition: background var(--t); }
     .msg-row:hover { background: rgba(255,255,255,.03); }
-    @keyframes msgin { from{opacity:0;transform:translateY(3px)} to{opacity:1;transform:none} }
-    .msg-row.is-new { animation: msgin .15s ease-out; }
+    @keyframes msgin    { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:none} }
+    @keyframes msgflash { 0%{background:rgba(34,211,238,.15)} 30%{background:rgba(34,211,238,.1)} 100%{background:transparent} }
+    .msg-row.is-new { animation: msgin .18s ease-out, msgflash 2s ease-out forwards; }
 
     .msg-av { width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0; overflow: hidden; margin-top: 2px; }
     .av-face { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; font-size: 20px; line-height: 1; user-select: none; border-radius: inherit; }
@@ -151,11 +179,21 @@
     }
     #compose-name::placeholder { color: var(--dim); }
     .compose-field {
-      flex: 1; display: flex; align-items: center; gap: 6px;
+      flex: 1; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
       background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
-      padding: 0 6px 0 12px; height: 36px;
+      padding: 0 6px 0 12px; min-height: 36px;
       transition: border-color var(--t);
     }
+    .img-strip { flex: 0 0 100%; display: flex; align-items: center; gap: 8px; padding: 6px 0 4px; }
+    .img-strip img { height: 56px; max-width: 90px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); }
+    .img-strip-remove {
+      width: 20px; height: 20px; border-radius: 4px; font-size: 15px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      color: var(--dim); background: var(--sur2);
+      transition: color var(--t), background var(--t);
+    }
+    .img-strip-remove:hover { color: var(--danger); background: rgba(239,68,68,.15); }
+    .msg-img { max-width: 320px; max-height: 240px; border-radius: 6px; display: block; margin-top: 4px; cursor: zoom-in; }
     .compose-field:focus-within { border-color: var(--bhi); }
     #compose-input { flex: 1; background: none; border: none; outline: none; font-size: 15px; color: var(--text); }
     #compose-input::placeholder { color: var(--dim); }
@@ -169,15 +207,15 @@
     .compose-send:disabled { opacity: .3; pointer-events: none; }
     .compose-send svg { width: 13px; height: 13px; }
 
-    /* ─── Mention autocomplete ───────────────────────────────────────────── */
+    /* ─── Mention & slash autocomplete ─────────────────────────────────────── */
     .compose-bar { position: relative; }
-    #mention-list {
+    #mention-list, #slash-list {
       position: absolute; bottom: calc(100% + 6px); left: 0; right: 0;
       background: #111827; border: 1px solid var(--bhi); border-radius: 8px;
       overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.7);
       list-style: none; z-index: 200;
     }
-    #mention-list[hidden] { display: none; }
+    #mention-list[hidden], #slash-list[hidden] { display: none; }
     .mention-item {
       display: flex; align-items: center; gap: 10px;
       padding: 8px 14px; cursor: pointer;
@@ -188,6 +226,17 @@
     .mention-item:hover { background: rgba(255,255,255,.06); }
     .mention-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .mention-role { font-size: 12px; font-weight: 400; color: var(--dim); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
+    /* Slash command palette */
+    .slash-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px; cursor: pointer; font-size: 14px;
+      transition: background var(--t);
+    }
+    .slash-item[aria-selected="true"] { background: rgba(255,255,255,.09); }
+    .slash-item:hover { background: rgba(255,255,255,.06); }
+    .slash-cmd { font-family: 'IBM Plex Mono', monospace; font-size: 13px; font-weight: 600; color: #22d3ee; min-width: 56px; }
+    .slash-desc { font-size: 13px; color: var(--sub); }
+    .slash-hint { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--dim); margin-left: auto; }
 
     /* ─── Members panel ───────────────────────────────────────────────────── */
     .members {
@@ -238,13 +287,21 @@
       background: #111827; border: 1px solid var(--bhi);
       border-radius: 10px; padding: 14px;
       box-shadow: 0 16px 48px rgba(0,0,0,.8);
-      display: flex; flex-direction: column; gap: 12px;
-      width: 228px;
+      display: flex; flex-direction: column; gap: 10px;
+      width: 264px;
     }
     #picker[hidden] { display: none; }
-    .picker-section-lbl { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin-bottom: 6px; }
-    .picker-cat-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin: 6px 0 3px; }
-    .picker-cat-lbl:first-child { margin-top: 0; }
+    .picker-section-lbl { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin-bottom: 4px; }
+    .av-search {
+      width: 100%; background: rgba(255,255,255,.06); border: 1px solid var(--border);
+      border-radius: 5px; padding: 4px 9px; font-size: 13px; color: var(--text);
+      outline: none; transition: border-color var(--t);
+    }
+    .av-search:focus { border-color: #22d3ee; }
+    .av-search::placeholder { color: var(--dim); }
+    .av-grid-scroll { max-height: 280px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+    .av-cat { display: flex; flex-direction: column; gap: 4px; }
+    .picker-cat-lbl { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); }
     .av-grid { display: flex; flex-wrap: wrap; gap: 4px; }
     .av-btn {
       width: 38px; height: 38px; border-radius: 8px; font-size: 20px;
@@ -296,6 +353,22 @@
 
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
+    /* ─── Worker tooltip ─────────────────────────────────────────────────────── */
+    #worker-tip {
+      position: fixed; z-index: 3000; pointer-events: none;
+      background: #0d1526; border: 1px solid var(--bhi);
+      border-radius: 8px; padding: 10px 13px;
+      box-shadow: 0 8px 28px rgba(0,0,0,.75);
+      min-width: 168px; max-width: 230px;
+      animation: tipfade .1s ease-out;
+    }
+    #worker-tip[hidden] { display: none; }
+    @keyframes tipfade { from{opacity:0;transform:translateX(4px)} to{opacity:1;transform:none} }
+    .tip-name { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+    .tip-row  { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--sub); margin-top: 4px; }
+    .tip-dot  { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .tip-lbl  { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); }
+
     @media (max-width: 720px) {
       .members { display: none; }
       #server-url { width: 130px; }
@@ -330,7 +403,8 @@
 <div id="picker" hidden role="dialog" aria-label="Customize avatar" aria-modal="true">
   <div>
     <p class="picker-section-lbl">Avatar</p>
-    <div id="av-grid" class="av-grid" role="group" aria-label="Choose avatar"></div>
+    <input id="av-search" class="av-search" type="text" placeholder="Search avatars…" autocomplete="off" spellcheck="false" aria-label="Search avatars">
+    <div style="margin-top:6px" id="av-grid" class="av-grid-scroll" role="group" aria-label="Choose avatar"></div>
   </div>
   <div>
     <p class="picker-section-lbl">Color</p>
@@ -343,8 +417,11 @@
   <!-- Feed -->
   <div class="feed-wrap">
     <div class="feed-header">
-      <span class="feed-title"><span aria-hidden="true">#</span>general</span>
-      <span class="feed-desc">All worker messages</span>
+      <span class="feed-title" id="feed-title"><span aria-hidden="true">#</span>general</span>
+      <span class="feed-desc" id="feed-desc">All worker messages</span>
+      <button id="inbox-btn" aria-pressed="false" title="Show messages addressed to you">
+        Inbox <span class="inbox-badge" id="inbox-badge" data-n="0">0</span>
+      </button>
       <span class="msg-pill" id="msg-count" aria-live="polite">0 messages</span>
       <span class="msg-pill" id="last-updated" aria-live="polite"></span>
     </div>
@@ -359,7 +436,12 @@
         <input id="compose-name" placeholder="your name" maxlength="32" autocomplete="off" spellcheck="false" aria-label="Your name">
       </div>
       <ul id="mention-list" hidden role="listbox" aria-label="Mention suggestions"></ul>
+      <ul id="slash-list"   hidden role="listbox" aria-label="Command suggestions"></ul>
       <div class="compose-field">
+        <div id="img-strip" class="img-strip" hidden>
+          <img id="img-preview-thumb" alt="pasted image preview">
+          <button id="img-remove-btn" class="img-strip-remove" type="button" aria-label="Remove pasted image">×</button>
+        </div>
         <input id="compose-input" placeholder="Message everyone  ·  @worker to DM" autocomplete="off" spellcheck="false" aria-label="Message" aria-autocomplete="list" aria-controls="mention-list">
         <button class="compose-send" id="compose-send" aria-label="Send message">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
@@ -387,35 +469,101 @@
 </main>
 
 <div id="sr-live" class="sr-only" aria-live="assertive" aria-atomic="false"></div>
+<div id="worker-tip" hidden aria-hidden="true"></div>
 
 <script>
 // ── Avatar catalogue ──────────────────────────────────────────────────────────
 const AVATARS = [
   // Tech
-  { id:'robot',    emoji:'🤖', label:'Robot',     cat:'Tech' },
-  { id:'alien',    emoji:'👾', label:'Alien',      cat:'Tech' },
-  { id:'hacker',   emoji:'💻', label:'Hacker',     cat:'Tech' },
-  { id:'nerd',     emoji:'🤓', label:'Nerd',       cat:'Tech' },
+  { id:'robot',      emoji:'🤖', label:'Robot',       cat:'Tech' },
+  { id:'alien',      emoji:'👾', label:'Alien',        cat:'Tech' },
+  { id:'hacker',     emoji:'💻', label:'Hacker',       cat:'Tech' },
+  { id:'nerd',       emoji:'🤓', label:'Nerd',         cat:'Tech' },
+  { id:'engineer',   emoji:'🔧', label:'Engineer',     cat:'Tech' },
+  { id:'lightning',  emoji:'⚡', label:'Lightning',    cat:'Tech' },
+  { id:'satellite',  emoji:'📡', label:'Satellite',    cat:'Tech' },
+  { id:'circuit',    emoji:'🖥️', label:'Terminal',     cat:'Tech' },
+  // Science
+  { id:'dna',        emoji:'🧬', label:'Biologist',    cat:'Science' },
+  { id:'microscope', emoji:'🔬', label:'Researcher',   cat:'Science' },
+  { id:'nuclear',    emoji:'☢️', label:'Nuclear',      cat:'Science' },
+  { id:'flask',      emoji:'🧪', label:'Chemist',      cat:'Science' },
+  { id:'mindblow',   emoji:'🤯', label:'Mind Blown',   cat:'Science' },
+  { id:'atom',       emoji:'⚛️', label:'Physicist',    cat:'Science' },
+  // Gaming
+  { id:'gamepad',    emoji:'🎮', label:'Gamer',        cat:'Gaming' },
+  { id:'joystick',   emoji:'🕹️', label:'Joystick',     cat:'Gaming' },
+  { id:'dice',       emoji:'🎲', label:'Dice',         cat:'Gaming' },
+  { id:'chess',      emoji:'♟️', label:'Chess',        cat:'Gaming' },
+  { id:'darts',      emoji:'🎯', label:'Darts',        cat:'Gaming' },
+  { id:'joker',      emoji:'🃏', label:'Joker',        cat:'Gaming' },
+  { id:'puzzle',     emoji:'🧩', label:'Puzzle',       cat:'Gaming' },
   // Sports
-  { id:'runner',   emoji:'🏃', label:'Runner',     cat:'Sports' },
-  { id:'hoops',    emoji:'🏀', label:'Hoops',      cat:'Sports' },
-  { id:'soccer',   emoji:'⚽', label:'Soccer',     cat:'Sports' },
-  { id:'champ',    emoji:'🏆', label:'Champion',   cat:'Sports' },
-  // Entertainment
-  { id:'rockstar', emoji:'🎸', label:'Rockstar',   cat:'Entertainment' },
-  { id:'wizard',   emoji:'🧙', label:'Wizard',     cat:'Entertainment' },
-  { id:'ninja',    emoji:'🥷', label:'Ninja',      cat:'Entertainment' },
-  { id:'joker',    emoji:'🃏', label:'Joker',      cat:'Entertainment' },
-  // Film / Sci-fi
-  { id:'space',    emoji:'🚀', label:'Astronaut',  cat:'Film' },
-  { id:'director', emoji:'🎬', label:'Director',   cat:'Film' },
-  { id:'detective',emoji:'🕵',  label:'Detective',  cat:'Film' },
-  { id:'hero',     emoji:'🦸', label:'Hero',       cat:'Film' },
-  // Wild card
-  { id:'cat',      emoji:'😸', label:'Cat',        cat:'Fun' },
-  { id:'ghost',    emoji:'👻', label:'Ghost',      cat:'Fun' },
-  { id:'fire',     emoji:'🔥', label:'Fire',       cat:'Fun' },
-  { id:'skull',    emoji:'💀', label:'Skull',      cat:'Fun' },
+  { id:'runner',     emoji:'🏃', label:'Runner',       cat:'Sports' },
+  { id:'hoops',      emoji:'🏀', label:'Basketball',   cat:'Sports' },
+  { id:'soccer',     emoji:'⚽', label:'Soccer',       cat:'Sports' },
+  { id:'champ',      emoji:'🏆', label:'Champion',     cat:'Sports' },
+  { id:'tennis',     emoji:'🎾', label:'Tennis',       cat:'Sports' },
+  { id:'boxer',      emoji:'🥊', label:'Boxer',        cat:'Sports' },
+  { id:'cyclist',    emoji:'🚴', label:'Cyclist',      cat:'Sports' },
+  { id:'surfer',     emoji:'🏄', label:'Surfer',       cat:'Sports' },
+  // Nature
+  { id:'fox',        emoji:'🦊', label:'Fox',          cat:'Nature' },
+  { id:'wolf',       emoji:'🐺', label:'Wolf',         cat:'Nature' },
+  { id:'eagle',      emoji:'🦅', label:'Eagle',        cat:'Nature' },
+  { id:'dragon',     emoji:'🐉', label:'Dragon',       cat:'Nature' },
+  { id:'lion',       emoji:'🦁', label:'Lion',         cat:'Nature' },
+  { id:'penguin',    emoji:'🐧', label:'Penguin',      cat:'Nature' },
+  { id:'shark',      emoji:'🦈', label:'Shark',        cat:'Nature' },
+  { id:'snake',      emoji:'🐍', label:'Snake',        cat:'Nature' },
+  // Mythic
+  { id:'wizard',     emoji:'🧙', label:'Wizard',       cat:'Mythic' },
+  { id:'elf',        emoji:'🧝', label:'Elf',          cat:'Mythic' },
+  { id:'vampire',    emoji:'🧛', label:'Vampire',      cat:'Mythic' },
+  { id:'ogre',       emoji:'👹', label:'Ogre',         cat:'Mythic' },
+  { id:'zombie',     emoji:'🧟', label:'Zombie',       cat:'Mythic' },
+  { id:'troll',      emoji:'🧌', label:'Troll',        cat:'Mythic' },
+  { id:'mage',       emoji:'🪄', label:'Mage',         cat:'Mythic' },
+  { id:'fairy',      emoji:'🧚', label:'Fairy',        cat:'Mythic' },
+  // Action
+  { id:'ninja',      emoji:'🥷', label:'Ninja',        cat:'Action' },
+  { id:'detective',  emoji:'🕵️', label:'Detective',    cat:'Action' },
+  { id:'hero',       emoji:'🦸', label:'Hero',         cat:'Action' },
+  { id:'villain',    emoji:'🦹', label:'Villain',      cat:'Action' },
+  { id:'cowboy',     emoji:'🤠', label:'Cowboy',       cat:'Action' },
+  { id:'cop',        emoji:'👮', label:'Officer',      cat:'Action' },
+  { id:'soldier',    emoji:'🪖', label:'Soldier',      cat:'Action' },
+  { id:'spy',        emoji:'🥸', label:'Spy',          cat:'Action' },
+  // Space
+  { id:'rocket',     emoji:'🚀', label:'Rocket',       cat:'Space' },
+  { id:'ufo',        emoji:'🛸', label:'UFO',          cat:'Space' },
+  { id:'comet',      emoji:'☄️', label:'Comet',        cat:'Space' },
+  { id:'moon',       emoji:'🌙', label:'Moon',         cat:'Space' },
+  { id:'star',       emoji:'⭐', label:'Star',         cat:'Space' },
+  { id:'astronaut',  emoji:'👨‍🚀', label:'Astronaut',   cat:'Space' },
+  { id:'planet',     emoji:'🪐', label:'Planet',       cat:'Space' },
+  { id:'blackhole',  emoji:'🌑', label:'Black Hole',   cat:'Space' },
+  // Music
+  { id:'rockstar',   emoji:'🎸', label:'Rockstar',     cat:'Music' },
+  { id:'pianist',    emoji:'🎹', label:'Pianist',      cat:'Music' },
+  { id:'trumpet',    emoji:'🎺', label:'Trumpeter',    cat:'Music' },
+  { id:'drummer',    emoji:'🥁', label:'Drummer',      cat:'Music' },
+  { id:'dj',         emoji:'🎧', label:'DJ',           cat:'Music' },
+  { id:'mic',        emoji:'🎤', label:'Vocalist',     cat:'Music' },
+  // Film
+  { id:'director',   emoji:'🎬', label:'Director',     cat:'Film' },
+  { id:'camera',     emoji:'🎥', label:'Cameraman',    cat:'Film' },
+  { id:'theater',    emoji:'🎭', label:'Actor',        cat:'Film' },
+  { id:'clown',      emoji:'🤡', label:'Clown',        cat:'Film' },
+  // Fun
+  { id:'fire',       emoji:'🔥', label:'Fire',         cat:'Fun' },
+  { id:'gem',        emoji:'💎', label:'Diamond',      cat:'Fun' },
+  { id:'crown',      emoji:'👑', label:'Crown',        cat:'Fun' },
+  { id:'skull',      emoji:'💀', label:'Skull',        cat:'Fun' },
+  { id:'cat',        emoji:'😸', label:'Cat',          cat:'Fun' },
+  { id:'ghost',      emoji:'👻', label:'Ghost',        cat:'Fun' },
+  { id:'pumpkin',    emoji:'🎃', label:'Pumpkin',      cat:'Fun' },
+  { id:'rainbow',    emoji:'🌈', label:'Rainbow',      cat:'Fun' },
 ];
 const AV_MAP = Object.fromEntries(AVATARS.map(a => [a.id, a]));
 
@@ -424,21 +572,35 @@ const PRESET_COLORS = [
   '#f472b6','#60a5fa','#a3e635','#fb923c','#c084fc',
 ];
 
-// Build picker avatar grid
-const avGrid = document.getElementById('av-grid');
-let lastCat = '';
-AVATARS.forEach(av => {
-  if (av.cat !== lastCat) {
+// Build picker avatar grid — per-category sections so labels stay aligned
+function buildPickerGrid(filter) {
+  const container = document.getElementById('av-grid');
+  container.innerHTML = '';
+  const q = (filter || '').toLowerCase();
+  const cats = [...new Set(AVATARS.map(a => a.cat))];
+  cats.forEach(cat => {
+    const inCat = AVATARS.filter(a => a.cat === cat && (
+      !q || a.label.toLowerCase().includes(q) || a.id.toLowerCase().includes(q) || cat.toLowerCase().includes(q)
+    ));
+    if (!inCat.length) return;
+    const section = document.createElement('div');
+    section.className = 'av-cat';
     const lbl = document.createElement('div');
-    lbl.className = 'picker-cat-lbl'; lbl.textContent = av.cat; lbl.setAttribute('aria-hidden','true');
-    avGrid.appendChild(lbl); lastCat = av.cat;
-  }
-  const btn = document.createElement('button');
-  btn.className = 'av-btn'; btn.dataset.style = av.id; btn.textContent = av.emoji;
-  btn.setAttribute('aria-label', av.label); btn.setAttribute('aria-pressed', 'false');
-  btn.title = av.label;
-  avGrid.appendChild(btn);
-});
+    lbl.className = 'picker-cat-lbl'; lbl.textContent = cat; lbl.setAttribute('aria-hidden','true');
+    const grid = document.createElement('div');
+    grid.className = 'av-grid';
+    inCat.forEach(av => {
+      const btn = document.createElement('button');
+      btn.className = 'av-btn'; btn.dataset.style = av.id; btn.textContent = av.emoji;
+      btn.setAttribute('aria-label', av.label); btn.setAttribute('aria-pressed','false');
+      btn.title = av.label;
+      grid.appendChild(btn);
+    });
+    section.appendChild(lbl); section.appendChild(grid);
+    container.appendChild(section);
+  });
+}
+buildPickerGrid();
 
 // Build picker color row
 const colorRow = document.getElementById('color-row');
@@ -471,6 +633,7 @@ const S = {
   colorIdx:    0,
   timers:      [],
   seenIds:     new Set(),
+  inboxMode:   false,
 };
 
 document.getElementById('server-url').value = S.url;
@@ -478,6 +641,24 @@ document.getElementById('compose-name').value = localStorage.getItem('collab-fro
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+let pendingImage = null;
+
+function renderContent(text) {
+  const IMG_MARKER = '\n[img]';
+  const idx = text.indexOf(IMG_MARKER);
+  if (idx !== -1) {
+    const txtPart = text.slice(0, idx);
+    const dataUrl = text.slice(idx + IMG_MARKER.length);
+    const textHtml = txtPart ? `<span>${esc(txtPart)}</span>` : '';
+    return `${textHtml}<img class="msg-img" src="${dataUrl}" alt="image" loading="lazy">`;
+  }
+  if (text.startsWith('data:image/')) {
+    return `<img class="msg-img" src="${text}" alt="image" loading="lazy">`;
+  }
+  return esc(text);
+}
+
 function fmtTime(iso) { return new Date(iso).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}); }
 function fmtDate(iso) {
   const d = new Date(iso), today = new Date();
@@ -526,19 +707,57 @@ function getAllMsgs() {
   return all.sort((a,b) => new Date(a.timestamp) - new Date(b.timestamp));
 }
 
+function unrepliedSenderCount(me, allMsgs) {
+  if (!me) return 0;
+  // For each sender who messaged me, check if I've sent anything back after their latest message
+  const latestToMe = {};
+  allMsgs.forEach(m => {
+    if (m.recipient !== me) return;
+    const t = new Date(m.timestamp).getTime();
+    if (!latestToMe[m.sender] || t > latestToMe[m.sender]) latestToMe[m.sender] = t;
+  });
+  const myLatestTo = {};
+  allMsgs.forEach(m => {
+    if (m.sender !== me) return;
+    const t = new Date(m.timestamp).getTime();
+    [m.recipient, 'all'].forEach(r => {
+      if (!myLatestTo[r] || t > myLatestTo[r]) myLatestTo[r] = t;
+    });
+  });
+  return Object.entries(latestToMe).filter(([sender, t]) =>
+    (!myLatestTo[sender] || myLatestTo[sender] < t) &&
+    (!myLatestTo['all']  || myLatestTo['all']  < t)
+  ).length;
+}
+
 function renderFeed() {
   const feed  = document.getElementById('feed');
   const empty = document.getElementById('feed-empty');
-  const msgs  = getAllMsgs();
+  const me    = document.getElementById('compose-name').value.trim();
+  const all   = getAllMsgs();
+
+  // Update inbox badge
+  const n = unrepliedSenderCount(me, all);
+  const badge = document.getElementById('inbox-badge');
+  badge.textContent = n;
+  badge.dataset.n = n;
+
+  let msgs = S.inboxMode ? all.filter(m => m.recipient === me) : all;
+
+  // Update feed header labels
+  document.getElementById('feed-title').innerHTML =
+    S.inboxMode ? `<span aria-hidden="true">📬</span> Inbox` : `<span aria-hidden="true">#</span>general`;
+  document.getElementById('feed-desc').textContent =
+    S.inboxMode ? (me ? `Messages to @${me}` : 'Messages to you') : 'All worker messages';
 
   document.getElementById('msg-count').textContent = `${msgs.length} message${msgs.length===1?'':'s'}`;
-  if (!msgs.length) { empty.hidden = false; return; }
+  if (!msgs.length) { empty.hidden = false; feed.innerHTML = ''; return; }
   empty.hidden = true;
 
-  const atBottom   = feed.scrollHeight - feed.scrollTop <= feed.clientHeight + 60;
-  const prevTop    = feed.scrollTop;
-  const prevCount  = parseInt(feed.dataset.count || 0);
-  const isAppend   = msgs.length > prevCount && prevCount > 0;
+  const atBottom  = feed.scrollHeight - feed.scrollTop <= feed.clientHeight + 60;
+  const prevTop   = feed.scrollTop;
+  const prevCount = parseInt(feed.dataset.count || 0);
+  const isAppend  = !S.inboxMode && msgs.length > prevCount && prevCount > 0;
 
   if (isAppend) {
     msgs.slice(prevCount).forEach(m => {
@@ -547,6 +766,8 @@ function renderFeed() {
       feed.appendChild(el.firstElementChild);
     });
   } else {
+    // Capture which IDs were already rendered before wiping
+    const prevIds = new Set([...feed.querySelectorAll('.msg-row')].map(r => r.dataset.id));
     let lastDate = '', html = '';
     for (const m of msgs) {
       const ds = fmtDate(m.timestamp);
@@ -554,6 +775,12 @@ function renderFeed() {
       html += msgHtml(m, false);
     }
     feed.innerHTML = html;
+    // Flash rows that weren't previously visible (skip on first render when prevIds is empty)
+    if (prevIds.size > 0) {
+      feed.querySelectorAll('.msg-row').forEach(row => {
+        if (!prevIds.has(row.dataset.id)) row.classList.add('is-new');
+      });
+    }
   }
   feed.dataset.count = msgs.length;
   if (atBottom) feed.scrollTop = feed.scrollHeight;
@@ -566,7 +793,8 @@ function msgHtml(m, isNew) {
   const toLabel = m.recipient === 'all'
     ? `<span class="msg-to">→ <b>@all</b></span>`
     : m.recipient ? `<span class="msg-to">→ @${esc(m.recipient)}</span>` : '';
-  return `<div class="msg-row${isNew?' is-new':''}" aria-label="${esc(m.sender)}: ${esc(m.content)}">
+  const replyBtn = `<button class="msg-reply-btn" data-to="${esc(m.sender)}" aria-label="Reply to ${esc(m.sender)}" title="Reply to @${esc(m.sender)}">↩</button>`;
+  return `<div class="msg-row${isNew?' is-new':''}" data-id="${esc(m.id)}" aria-label="${esc(m.sender)}: ${esc(m.content)}">
     <div class="msg-av">${faceHtml(style, hex)}</div>
     <div class="msg-body">
       <div class="msg-meta">
@@ -574,8 +802,9 @@ function msgHtml(m, isNew) {
         ${toLabel}
         <time class="msg-time" datetime="${esc(m.timestamp)}">${fmtTime(m.timestamp)}</time>
         <span class="msg-hash">${esc(m.hash.slice(0,7))}</span>
+        ${replyBtn}
       </div>
-      <div class="msg-text">${esc(m.content)}</div>
+      <div class="msg-text">${renderContent(m.content)}</div>
     </div>
   </div>`;
 }
@@ -642,6 +871,57 @@ function refreshMemberAvatar(el, id) {
   const hint = avBtn.querySelector('.edit-hint');
   avBtn.innerHTML = faceHtml(workerStyle(id), assignColor(id)) + `<span class="edit-hint" aria-hidden="true">✏️</span>`;
 }
+
+// ── Worker tooltip ────────────────────────────────────────────────────────────
+function timeAgo(ts) {
+  const s = (Date.now() - new Date(ts)) / 1000;
+  if (s < 15)   return 'just now';
+  if (s < 60)   return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400)return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+}
+
+const workerTip = document.getElementById('worker-tip');
+let tipRow = null;
+
+document.querySelector('.members').addEventListener('mouseover', e => {
+  const row = e.target.closest('.member-row');
+  if (row === tipRow) return;
+  tipRow = row;
+  if (!row) { workerTip.hidden = true; return; }
+
+  const id = row.dataset.id;
+  const w  = S.workers.find(x => x.instance_id === id);
+  if (!w) { workerTip.hidden = true; return; }
+
+  const isOn    = online(w.last_seen);
+  const hex     = assignColor(id);
+  const msgsSent = getAllMsgs().filter(m => m.sender === id).length;
+  const msgsRecv = getAllMsgs().filter(m => m.recipient === id).length;
+  const dotStyle = `background:${isOn ? '#22c55e' : 'var(--offline)'}`;
+
+  workerTip.innerHTML =
+    `<div class="tip-name" style="color:${hex}">@${esc(id)}</div>` +
+    `<div class="tip-row"><span class="tip-dot" style="${dotStyle}"></span>${isOn ? 'Online' : 'Offline'} &middot; ${timeAgo(w.last_seen)}</div>` +
+    (w.role ? `<div class="tip-row" style="margin-top:6px"><span class="tip-lbl">Role</span>${esc(w.role)}</div>` : '') +
+    `<div class="tip-row" style="margin-top:6px"><span class="tip-lbl">Msgs</span>${msgsSent} sent &middot; ${msgsRecv} recv</div>`;
+
+  workerTip.hidden = false;
+  const rect = row.getBoundingClientRect();
+  const tw = workerTip.offsetWidth, th = workerTip.offsetHeight;
+  let left = rect.left - tw - 10;
+  let top  = rect.top + (rect.height - th) / 2;
+  if (left < 8) left = rect.right + 10;
+  if (top + th > window.innerHeight - 8) top = window.innerHeight - th - 8;
+  workerTip.style.left = `${Math.max(8, left)}px`;
+  workerTip.style.top  = `${Math.max(8, top)}px`;
+});
+
+document.querySelector('.members').addEventListener('mouseleave', () => {
+  workerTip.hidden = true;
+  tipRow = null;
+});
 
 // ── Sound ─────────────────────────────────────────────────────────────────────
 let audioCtx = null;
@@ -717,11 +997,29 @@ async function loadHistory(id) {
   try { S.histories[id] = await api(`/history/${id}`); } catch {}
 }
 
+function isValidId(s) {
+  return s.length > 0 && s.length <= 64 && /^[a-zA-Z0-9\-_]+$/.test(s);
+}
+
+async function heartbeat() {
+  const me = document.getElementById('compose-name').value.trim();
+  if (!isValidId(me)) return;
+  try {
+    await api(`/presence/${encodeURIComponent(me)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: null }),
+    });
+  } catch {} // silent — don't disrupt anything if it fails
+}
+
 function startPolling() {
   S.timers.forEach(clearInterval);
   S.timers.length = 0;
+  heartbeat();
   pollAll();
   S.timers.push(setInterval(pollAll, 3000));
+  S.timers.push(setInterval(heartbeat, 30000));
 }
 
 // ── Avatar picker ─────────────────────────────────────────────────────────────
@@ -763,14 +1061,31 @@ function openPicker(id, anchorEl) {
   picker.style.left = `${Math.max(8, left)}px`;
   picker.style.top  = `${Math.max(8, top)}px`;
 
+  // Reset search
+  const searchEl = document.getElementById('av-search');
+  if (searchEl.value) { searchEl.value = ''; buildPickerGrid(); }
+
   pickerJustOpened = true;
-  picker.querySelector('.av-btn').focus();
+  picker.querySelector('.av-btn')?.focus();
 }
 
 function closePicker() {
   document.getElementById('picker').hidden = true;
   pickerTarget = null; pickerAnchor = null;
 }
+
+document.getElementById('av-search').addEventListener('input', e => {
+  buildPickerGrid(e.target.value);
+  // Re-apply selected state for current target
+  if (pickerTarget) {
+    const style = workerStyle(pickerTarget);
+    document.querySelectorAll('#av-grid .av-btn').forEach(btn => {
+      const sel = btn.dataset.style === style;
+      btn.classList.toggle('selected', sel);
+      btn.setAttribute('aria-pressed', String(sel));
+    });
+  }
+});
 
 function applyPickerColor(hex) {
   if (!pickerTarget) return;
@@ -831,6 +1146,84 @@ document.addEventListener('click', () => {
 document.getElementById('picker').addEventListener('click', e => e.stopPropagation());
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closePicker(); });
 
+// ── Slash commands ────────────────────────────────────────────────────────────
+const SLASH_CMDS = [
+  { cmd: 'r',   desc: 'Reply to last sender',  hint: '/r [text]'            },
+  { cmd: 'w',   desc: 'DM a worker',           hint: '/w <worker> [text]'   },
+  { cmd: 'all', desc: 'Message everyone',      hint: '/all [text]'          },
+];
+let slashMatches = [], slashIdx = 0;
+
+function lastSenderForMe() {
+  const me   = document.getElementById('compose-name').value.trim();
+  const msgs = getAllMsgs();
+  // Prefer someone who specifically addressed me
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m.sender !== me && (m.recipient === me || m.recipient === 'all')) return m.sender;
+  }
+  // Fallback: anyone else
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].sender !== me) return msgs[i].sender;
+  }
+  return null;
+}
+
+function renderSlashList() {
+  const list = document.getElementById('slash-list');
+  if (!slashMatches.length) { list.hidden = true; return; }
+  list.hidden = false;
+  list.innerHTML = slashMatches.map((c, i) =>
+    `<li class="slash-item" role="option"${i === slashIdx ? ' aria-selected="true"' : ''} data-cmd="${esc(c.cmd)}">` +
+    `<span class="slash-cmd">/${esc(c.cmd)}</span>` +
+    `<span class="slash-desc">${esc(c.desc)}</span>` +
+    `<span class="slash-hint">${esc(c.hint)}</span>` +
+    `</li>`
+  ).join('');
+}
+
+function closeSlashList() {
+  slashMatches = []; slashIdx = 0;
+  document.getElementById('slash-list').hidden = true;
+}
+
+function applySlash(cmd) {
+  const input = document.getElementById('compose-input');
+  closeSlashList();
+  if (cmd === 'r') {
+    const sender = lastSenderForMe();
+    if (sender) { input.value = `@${sender} `; input.setSelectionRange(input.value.length, input.value.length); }
+    else { input.value = ''; announce('No recent messages to reply to'); }
+  } else if (cmd === 'all') {
+    input.value = '@all '; input.setSelectionRange(input.value.length, input.value.length);
+  } else if (cmd === 'w') {
+    input.value = '@'; input.setSelectionRange(1, 1);
+    // Trigger mention autocomplete
+    input.dispatchEvent(new Event('input'));
+  }
+}
+
+function expandSlashOnSend(text) {
+  if (!text.startsWith('/')) return text;
+  const spIdx = text.indexOf(' ');
+  const cmd   = spIdx === -1 ? text.slice(1) : text.slice(1, spIdx);
+  const rest  = spIdx === -1 ? '' : text.slice(spIdx + 1).trim();
+  if (cmd === 'r') {
+    const sender = lastSenderForMe();
+    if (!sender) { announce('No recent messages to reply to'); return null; }
+    return rest ? `@${sender} ${rest}` : `@${sender} `;
+  }
+  if (cmd === 'all') return rest ? `@all ${rest}` : '@all ';
+  if (cmd === 'w') {
+    const parts = rest.split(/\s+/);
+    const worker = parts[0];
+    if (!worker) { announce('Usage: /w <worker> [message]'); return null; }
+    const body = parts.slice(1).join(' ');
+    return body ? `@${worker} ${body}` : `@${worker} `;
+  }
+  return text; // unknown — send as-is
+}
+
 // ── Mention autocomplete ──────────────────────────────────────────────────────
 let mentionIdx = 0;
 let mentionMatches = [];
@@ -885,6 +1278,27 @@ function applyMention(id) {
 
 document.getElementById('compose-input').addEventListener('input', () => {
   const input = document.getElementById('compose-input');
+  const val   = input.value;
+
+  // Slash command palette — show when typing /cmd with no space yet
+  if (val.startsWith('/') && !val.includes(' ')) {
+    const q = val.slice(1).toLowerCase();
+    slashMatches = SLASH_CMDS.filter(c => c.cmd.startsWith(q));
+    slashIdx = 0;
+    closeMentionList();
+    renderSlashList();
+    return;
+  }
+  closeSlashList();
+
+  // Auto-expand slash commands once a space is typed
+  if (val === '/r ') {
+    const sender = lastSenderForMe();
+    if (sender) { input.value = `@${sender} `; input.setSelectionRange(input.value.length, input.value.length); return; }
+  }
+  if (val === '/all ') { input.value = '@all '; input.setSelectionRange(input.value.length, input.value.length); return; }
+  if (val === '/w ') { input.value = '@'; input.setSelectionRange(1, 1); }
+
   const query = getMentionQuery(input.value, input.selectionStart);
   if (query === null) { closeMentionList(); return; }
   mentionMatches = mentionCandidates(query);
@@ -896,8 +1310,12 @@ document.getElementById('mention-list').addEventListener('mousedown', e => {
   const item = e.target.closest('.mention-item');
   if (item) { e.preventDefault(); applyMention(item.dataset.id); }
 });
+document.getElementById('slash-list').addEventListener('mousedown', e => {
+  const item = e.target.closest('.slash-item');
+  if (item) { e.preventDefault(); applySlash(item.dataset.cmd); }
+});
 document.getElementById('compose-input').addEventListener('blur', () => {
-  setTimeout(closeMentionList, 150);
+  setTimeout(() => { closeMentionList(); closeSlashList(); }, 150);
 });
 
 // ── Compose ───────────────────────────────────────────────────────────────────
@@ -914,26 +1332,51 @@ async function handleSend() {
     setTimeout(() => nameEl.style.color = '', 1500);
     return;
   }
-  if (!text) return;
+  if (!text && !pendingImage) return;
+
+  // Expand slash commands typed directly at send time
+  if (text.startsWith('/')) {
+    const expanded = expandSlashOnSend(text);
+    if (expanded === null) return;
+    text = expanded.trim();
+  }
+  if (!text && !pendingImage) return;
 
   let to = 'all';
   const m = text.match(/^@(\S+)\s+([\s\S]*)$/);
   if (m) { to = m[1]; text = m[2].trim() || text; }
-  if (!text) return;
+
+  const content = pendingImage
+    ? (text ? text + '\n[img]' + pendingImage : pendingImage)
+    : text;
+  if (!content) return;
 
   localStorage.setItem('collab-from', from);
-  inputEl.value = ''; sendBtn.disabled = true;
+  inputEl.value = '';
+  const savedImage = pendingImage;
+  pendingImage = null;
+  document.getElementById('img-strip').hidden = true;
+  document.getElementById('img-preview-thumb').src = '';
+  sendBtn.disabled = true;
 
   try {
-    await api('/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sender: from, recipient: to, content: text, refs: [] }),
-    });
+    await Promise.all([
+      api('/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sender: from, recipient: to, content, refs: [] }),
+      }),
+      heartbeat(),
+    ]);
     await pollAll();
   } catch {
     announce('Failed to send — is the server running?');
     inputEl.value = text;
+    if (savedImage) {
+      pendingImage = savedImage;
+      document.getElementById('img-strip').hidden = false;
+      document.getElementById('img-preview-thumb').src = savedImage;
+    }
   } finally {
     sendBtn.disabled = false;
     inputEl.focus();
@@ -942,6 +1385,26 @@ async function handleSend() {
 
 document.getElementById('compose-send').addEventListener('click', handleSend);
 document.getElementById('compose-input').addEventListener('keydown', e => {
+  if (slashMatches.length) {
+    if (e.key === 'Tab' || e.key === 'Enter') {
+      e.preventDefault();
+      applySlash(slashMatches[slashIdx].cmd);
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      slashIdx = (slashIdx + 1) % slashMatches.length;
+      renderSlashList();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      slashIdx = (slashIdx - 1 + slashMatches.length) % slashMatches.length;
+      renderSlashList();
+      return;
+    }
+    if (e.key === 'Escape') { closeSlashList(); return; }
+  }
   if (mentionMatches.length) {
     if (e.key === 'Tab' || e.key === 'ArrowRight') {
       e.preventDefault();
@@ -964,6 +1427,58 @@ document.getElementById('compose-input').addEventListener('keydown', e => {
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
 });
+
+// ── Image paste ───────────────────────────────────────────────────────────────
+document.getElementById('compose-input').addEventListener('paste', e => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/')) {
+      e.preventDefault();
+      const file = item.getAsFile();
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        pendingImage = ev.target.result;
+        document.getElementById('img-preview-thumb').src = pendingImage;
+        document.getElementById('img-strip').hidden = false;
+      };
+      reader.readAsDataURL(file);
+      break;
+    }
+  }
+});
+
+document.getElementById('img-remove-btn').addEventListener('click', () => {
+  pendingImage = null;
+  document.getElementById('img-strip').hidden = true;
+  document.getElementById('img-preview-thumb').src = '';
+  document.getElementById('compose-input').focus();
+});
+
+document.getElementById('feed').addEventListener('click', e => {
+  const reply = e.target.closest('.msg-reply-btn');
+  if (reply) {
+    const input = document.getElementById('compose-input');
+    input.value = `@${reply.dataset.to} `;
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+    return;
+  }
+  const img = e.target.closest('.msg-img');
+  if (img) window.open(img.src, '_blank');
+});
+
+document.getElementById('inbox-btn').addEventListener('click', () => {
+  S.inboxMode = !S.inboxMode;
+  document.getElementById('inbox-btn').setAttribute('aria-pressed', String(S.inboxMode));
+  document.getElementById('feed').dataset.count = 0; // force full re-render
+  renderFeed();
+});
+
+// Re-compute inbox count when your name changes
+document.getElementById('compose-name').addEventListener('input', () => renderFeed());
+document.getElementById('compose-name').addEventListener('change', () => heartbeat());
 
 // ── Stop / resume all workers ─────────────────────────────────────────────────
 const STOP_SIGNAL = '__COLLAB_STOP_WATCH__';

@@ -4,8 +4,11 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 mod client;
+mod init;
 #[cfg(feature = "monitor")]
 mod monitor;
+#[cfg(feature = "monitor")]
+mod wizard;
 
 use client::CollabClient;
 
@@ -163,6 +166,27 @@ enum Commands {
 
     /// Print the path to the config file
     ConfigPath,
+
+    /// Set up worker environments from a YAML config (or interactive wizard)
+    ///
+    /// Example YAML:
+    ///
+    ///   server: http://localhost:8000
+    ///   output_dir: ./workers     # optional
+    ///   workers:
+    ///     - name: frontend
+    ///       role: "Build the React UI and manage component state"
+    ///     - name: backend
+    ///       role: "Implement REST API endpoints and database queries"
+    Init {
+        /// Path to workers YAML file (omit to launch interactive wizard)
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
+
+        /// Override the output directory from the YAML
+        #[arg(short, long, value_name = "DIR")]
+        output: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -183,6 +207,31 @@ async fn main() -> Result<()> {
     let token = std::env::var("COLLAB_TOKEN").ok().or(file_config.token);
 
     let recipients = file_config.recipients;
+
+    if let Commands::Init { file, output } = cli.command {
+        match file {
+            Some(path) => {
+                init::run_from_yaml(&path, output.as_deref())?;
+            }
+            None => {
+                #[cfg(feature = "monitor")]
+                {
+                    match wizard::run()? {
+                        Some(config) => init::generate(&config, output.as_deref())?,
+                        None => println!("Wizard cancelled."),
+                    }
+                }
+                #[cfg(not(feature = "monitor"))]
+                {
+                    anyhow::bail!(
+                        "Interactive wizard requires the 'monitor' feature.\n\
+                         Provide a YAML file instead: collab init workers.yaml"
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
 
     if matches!(cli.command, Commands::Roster) {
         let client = CollabClient::new(&server, "", token.as_deref());
@@ -210,6 +259,10 @@ async fn main() -> Result<()> {
     })?;
 
     let client = CollabClient::new(&server, &instance_id, token.as_deref());
+
+    // Update presence on every command so the roster stays current even without `watch`.
+    // Ignore errors — if the server is unreachable the command itself will surface that.
+    let _ = client.heartbeat(None).await;
 
     match cli.command {
         Commands::List { all, from, since } => {
@@ -258,7 +311,7 @@ async fn main() -> Result<()> {
             .join()
             .unwrap_or_else(|_| Err(anyhow::anyhow!("monitor panicked")))?;
         }
-        Commands::Roster | Commands::ConfigPath => unreachable!(),
+        Commands::Roster | Commands::ConfigPath | Commands::Init { .. } => unreachable!(),
         #[allow(unreachable_patterns)]
         _ => unreachable!(),
     }
