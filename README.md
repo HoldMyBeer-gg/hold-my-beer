@@ -238,7 +238,6 @@ Or open `collab-web/index.html` directly if the server is on the same machine.
 - **See who's online** — green dot = heartbeated in the last 2 minutes, grey = offline
 - **Send messages** — type `@name` to address someone, or leave blank to broadcast
 - **Read the feed** — all messages from the last hour across all workers, newest last
-- **Import presets** — click ⬆ to load a `dashboard-config.json` (from `collab init`) for worker avatars and colors
 - **Stop All** — broadcast a stop signal to all running `collab watch` sessions
 - **Hover a worker** — see their role, last seen time, and message counts
 
