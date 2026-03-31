@@ -158,6 +158,15 @@
     .feed-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80%; gap: 8px; color: var(--dim); font-size: 15px; }
     .feed-empty-icon { font-size: 30px; opacity: .3; }
 
+    /* ─── Load earlier button ─────────────────────────────────────────────── */
+    .load-earlier-wrap { display: flex; justify-content: center; padding: 10px 18px 4px; }
+    .load-earlier-wrap button {
+      font-size: 13px; font-weight: 600; color: var(--dim-text);
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      padding: 5px 14px; transition: color var(--t), border-color var(--t);
+    }
+    .load-earlier-wrap button:hover { color: var(--text); border-color: var(--bhi); }
+
     /* ─── Compose bar ─────────────────────────────────────────────────────── */
     .compose-bar {
       flex-shrink: 0; padding: 10px 18px 14px;
@@ -874,6 +883,7 @@ function setPrefs(id, patch) {
 const S = {
   url:         localStorage.getItem('collab-url') || 'http://localhost:8000',
   token:       localStorage.getItem('collab-token') || '',
+  sse:         null,
   workers:     [],
   histories:   {},
   colorMap:    {},   // id → hex string
@@ -886,6 +896,8 @@ const S = {
 document.getElementById('server-url').value = S.url;
 document.getElementById('server-token').value = S.token;
 document.getElementById('compose-name').value = localStorage.getItem('collab-from') || '';
+
+const PAGE_SIZE = 50; // max messages rendered at once; scroll up to load earlier
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -1017,13 +1029,18 @@ function renderFeed() {
   } else {
     // Capture which IDs were already rendered before wiping
     const prevIds = new Set([...feed.querySelectorAll('.msg-row')].map(r => r.dataset.id));
+    const renderFrom = Math.max(0, msgs.length - PAGE_SIZE);
     let lastDate = '', html = '';
-    for (const m of msgs) {
+    if (renderFrom > 0) {
+      html += `<div class="load-earlier-wrap"><button onclick="loadEarlier()">↑ Load ${renderFrom} earlier message${renderFrom === 1 ? '' : 's'}</button></div>`;
+    }
+    for (const m of msgs.slice(renderFrom)) {
       const ds = fmtDate(m.timestamp);
       if (ds !== lastDate) { html += `<div class="date-div" role="separator">${esc(ds)}</div>`; lastDate = ds; }
       html += msgHtml(m, false);
     }
     feed.innerHTML = html;
+    feed.dataset.renderFrom = renderFrom;
     // Flash rows that weren't previously visible (skip on first render when prevIds is empty)
     if (prevIds.size > 0) {
       feed.querySelectorAll('.msg-row').forEach(row => {
@@ -1034,6 +1051,44 @@ function renderFeed() {
   feed.dataset.count = msgs.length;
   if (atBottom) feed.scrollTop = feed.scrollHeight;
   else if (!isAppend) feed.scrollTop = prevTop;
+}
+
+function loadEarlier() {
+  const feed = document.getElementById('feed');
+  const me   = document.getElementById('compose-name').value.trim();
+  const all  = getAllMsgs();
+  const msgs = S.inboxMode ? all.filter(m => m.recipient === me || m.recipient === 'all') : all;
+
+  const currentFrom = parseInt(feed.dataset.renderFrom || 0);
+  if (currentFrom === 0) return;
+  const newFrom = Math.max(0, currentFrom - PAGE_SIZE);
+  const earlier = msgs.slice(newFrom, currentFrom);
+
+  // Build HTML for earlier batch
+  let html = '';
+  if (newFrom > 0) {
+    html += `<div class="load-earlier-wrap"><button onclick="loadEarlier()">↑ Load ${newFrom} earlier message${newFrom === 1 ? '' : 's'}</button></div>`;
+  }
+  let lastDate = '';
+  for (const m of earlier) {
+    const ds = fmtDate(m.timestamp);
+    if (ds !== lastDate) { html += `<div class="date-div" role="separator">${esc(ds)}</div>`; lastDate = ds; }
+    html += msgHtml(m, false);
+  }
+
+  // Remove existing sentinel
+  const sentinel = feed.querySelector('.load-earlier-wrap');
+  if (sentinel) sentinel.remove();
+
+  // Prepend earlier messages while preserving scroll anchor
+  const prevScrollHeight = feed.scrollHeight;
+  const prevScrollTop    = feed.scrollTop;
+  const temp = document.createElement('div');
+  temp.innerHTML = html;
+  while (temp.lastChild) feed.insertBefore(temp.lastChild, feed.firstChild);
+
+  feed.scrollTop = prevScrollTop + (feed.scrollHeight - prevScrollHeight);
+  feed.dataset.renderFrom = newFrom;
 }
 
 function msgHtml(m, isNew) {
@@ -1262,12 +1317,47 @@ async function heartbeat() {
   } catch {} // silent — don't disrupt anything if it fails
 }
 
+function startSSE() {
+  if (S.sse) { S.sse.close(); S.sse = null; }
+  const url = S.token
+    ? `${S.url.replace(/\/$/,'')}/events?token=${encodeURIComponent(S.token)}`
+    : `${S.url.replace(/\/$/,'')}/events`;
+  const es = new EventSource(url);
+  es.onopen = () => setConn('ok');
+  es.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (!S.histories[msg.sender]) S.histories[msg.sender] = [];
+      S.histories[msg.sender].push(msg);
+      if (!S.histories[msg.recipient]) S.histories[msg.recipient] = [];
+      if (msg.recipient !== msg.sender) S.histories[msg.recipient].push(msg);
+      checkForPings([msg]);
+      renderFeed();
+      document.getElementById('last-updated').textContent = 'updated ' + new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    } catch {}
+  };
+  es.onerror = () => { setConn('err'); };
+  S.sse = es;
+}
+
+async function pollRoster() {
+  try {
+    const workers = await api('/roster');
+    setConn('ok');
+    const prevIds = new Set(S.workers.map(w => w.instance_id));
+    workers.forEach(w => { assignColor(w.instance_id); if (!prevIds.has(w.instance_id)) announce(`${w.instance_id} joined`); });
+    S.workers = workers;
+    renderMembers();
+  } catch (e) { console.error('[pollRoster]', e); setConn('err'); }
+}
+
 function startPolling() {
   S.timers.forEach(clearInterval);
   S.timers.length = 0;
   heartbeat();
-  pollAll();
-  S.timers.push(setInterval(pollAll, 3000));
+  pollAll();        // initial full hydration (history + roster)
+  startSSE();       // then switch to SSE for live messages
+  S.timers.push(setInterval(pollRoster, 30000));   // roster only, every 30s
   S.timers.push(setInterval(heartbeat, 30000));
 }
 
@@ -1801,6 +1891,7 @@ document.getElementById('server-token').addEventListener('change', e => {
   localStorage.setItem('collab-token', S.token);
   setConn('connecting');
   startPolling();
+  startSSE();
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────────

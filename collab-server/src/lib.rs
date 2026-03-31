@@ -12,8 +12,9 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use sqlx::{sqlite::SqlitePool, Row};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
@@ -75,6 +76,8 @@ pub struct AppState {
     pub token: Option<String>,
     pub audit: bool,
     pub tx: broadcast::Sender<Arc<Message>>,
+    pub sse_subscribers: Arc<AtomicUsize>,
+    pub started_at: Instant,
 }
 
 async fn auth_middleware(
@@ -83,12 +86,22 @@ async fn auth_middleware(
     next: Next,
 ) -> Response {
     if let Some(expected) = &state.token {
-        let provided = request
+        // Check Authorization header first
+        let header_token = request
             .headers()
             .get("Authorization")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
 
+        // Fall back to ?token= query param (needed for EventSource which can't set headers)
+        let query_token = request.uri().query().and_then(|q| {
+            q.split('&').find_map(|kv| {
+                let (k, v) = kv.split_once('=')?;
+                if k == "token" { Some(v) } else { None }
+            })
+        });
+
+        let provided = header_token.or(query_token);
         if provided != Some(expected.as_str()) {
             return StatusCode::UNAUTHORIZED.into_response();
         }
@@ -109,11 +122,13 @@ pub fn create_app(state: AppState) -> Router {
         .route("/presence/:instance_id", put(update_presence))
         .route("/presence/:instance_id", delete(delete_presence))
         .route("/messages/cleanup", delete(cleanup_old_messages))
+        .route("/metrics", get(get_metrics))
         .layer(TimeoutLayer::with_status_code(http::StatusCode::REQUEST_TIMEOUT, StdDuration::from_secs(30)));
 
-    // SSE route — no timeout, connection stays open indefinitely
+    // SSE routes — no timeout, connections stay open indefinitely
     let sse = Router::new()
-        .route("/events/:instance_id", get(stream_events));
+        .route("/events/:instance_id", get(stream_events))
+        .route("/events", get(stream_all_events));
 
     Router::new()
         .merge(timed)
@@ -130,7 +145,14 @@ pub fn create_app(state: AppState) -> Router {
 pub async fn create_test_app() -> Router {
     let db = db::init_test_db().await.unwrap();
     let (tx, _) = broadcast::channel(256);
-    let state = AppState { db, token: None, audit: false, tx };
+    let state = AppState {
+        db,
+        token: None,
+        audit: false,
+        tx,
+        sse_subscribers: Arc::new(AtomicUsize::new(0)),
+        started_at: Instant::now(),
+    };
     create_app(state)
 }
 
@@ -469,6 +491,15 @@ async fn create_message(
     Ok(Json(msg))
 }
 
+/// RAII guard that decrements the SSE subscriber counter when dropped.
+struct SseGuard(Arc<AtomicUsize>);
+
+impl Drop for SseGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 async fn stream_events(
     Path(instance_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -480,9 +511,14 @@ async fn stream_events(
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    state.sse_subscribers.fetch_add(1, Ordering::Relaxed);
+    let guard = SseGuard(Arc::clone(&state.sse_subscribers));
+
     let rx = state.tx.subscribe();
     let stream = BroadcastStream::new(rx)
         .filter_map(move |result| {
+            // Keep guard alive for the lifetime of the stream.
+            let _guard = &guard;
             match result {
                 Ok(msg) if msg.recipient == instance_id || msg.recipient == "all" => {
                     let event = Event::default()
@@ -496,6 +532,72 @@ async fn stream_events(
         });
 
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn stream_all_events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    use tokio_stream::wrappers::BroadcastStream;
+    use tokio_stream::StreamExt as _;
+
+    state.sse_subscribers.fetch_add(1, Ordering::Relaxed);
+    let guard = SseGuard(Arc::clone(&state.sse_subscribers));
+
+    let rx = state.tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+        let _guard = &guard;
+        match result {
+            Ok(msg) => Some(Ok(Event::default().json_data(&*msg).unwrap_or_else(|_| Event::default()))),
+            Err(_) => None,
+        }
+    });
+
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+async fn get_metrics(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let cutoff_iso = (Utc::now() - Duration::hours(1)).to_rfc3339();
+
+    let messages_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM messages")
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| {
+            tracing::error!("Database error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let messages_last_hour: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE timestamp >= ?")
+            .bind(&cutoff_iso)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+    let active_workers: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM presence WHERE last_seen >= ?")
+            .bind(&cutoff_iso)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|e| {
+                tracing::error!("Database error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+    let sse_subscribers = state.sse_subscribers.load(Ordering::Relaxed);
+    let uptime_secs = state.started_at.elapsed().as_secs();
+
+    Ok(Json(serde_json::json!({
+        "messages_total": messages_total,
+        "messages_last_hour": messages_last_hour,
+        "active_workers": active_workers,
+        "sse_subscribers": sse_subscribers,
+        "uptime_secs": uptime_secs,
+    })))
 }
 
 async fn cleanup_old_messages(
