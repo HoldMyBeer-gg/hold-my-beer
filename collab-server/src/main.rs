@@ -1,5 +1,15 @@
 use clap::Parser;
 use collab_server::{AppState, db};
+use std::sync::{Arc, atomic::AtomicUsize};
+use std::time::Instant;
+
+fn token_from_config() -> Option<String> {
+    #[derive(serde::Deserialize, Default)]
+    struct Cfg { token: Option<String> }
+    let home = std::env::var("HOME").ok()?;
+    let contents = std::fs::read_to_string(format!("{}/.collab.toml", home)).ok()?;
+    toml::from_str::<Cfg>(&contents).ok()?.token
+}
 
 #[derive(Parser)]
 #[command(name = "collab-server")]
@@ -30,16 +40,25 @@ async fn main() -> anyhow::Result<()> {
 
     let db = db::init_db().await?;
     let (tx, _) = tokio::sync::broadcast::channel(256);
-    let state = AppState { db, token: args.token.clone(), audit: args.audit, tx };
+    // Priority: --token flag > COLLAB_TOKEN env > ~/.collab.toml
+    let token = args.token.clone().or_else(token_from_config);
+    let state = AppState {
+        db,
+        token: token.clone(),
+        audit: args.audit,
+        tx,
+        sse_subscribers: Arc::new(AtomicUsize::new(0)),
+        started_at: Instant::now(),
+    };
     let app = collab_server::create_app(state);
 
     let addr = format!("{}:{}", args.host, args.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
-    if args.token.is_some() {
+    if token.is_some() {
         tracing::info!("Auth enabled — token required on all requests");
     } else {
-        tracing::warn!("Auth disabled — set --token or COLLAB_TOKEN to enable");
+        tracing::warn!("Auth disabled — set --token, COLLAB_TOKEN, or token in ~/.collab.toml");
     }
     if args.audit {
         tracing::info!("Audit log mode enabled — messages retained indefinitely, read_at stamped on delivery");
