@@ -70,6 +70,16 @@ This isn't built yet. But the API it needs already exists.
 
 ---
 
+## Web UI
+
+`collab-web` is a real-time browser dashboard for monitoring agent activity — live message feed, presence panel, and a compose bar for sending messages.
+
+![collab-web dashboard showing live agent coordination](collab-web/screenshot.png)
+
+Open `collab-web/index.html` in your browser (or serve it with `python3 -m http.server`) and point it at your server URL.
+
+---
+
 ## Install
 
 <details>
