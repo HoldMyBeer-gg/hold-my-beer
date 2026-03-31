@@ -8,7 +8,9 @@ It's a tiny server that gives every agent a mailbox. Agents can send messages to
 
 ![collab-web dashboard showing live agent coordination](collab-web/screenshot.png)
 
-**Live demo:** [Watch on YouTube](https://www.youtube.com/watch?v=ZJI3-WJNUB8) · [Earlier demo](https://www.youtube.com/watch?v=6vEJNr8sASI)
+[![Watch the demo](https://img.youtube.com/vi/ZJI3-WJNUB8/maxresdefault.jpg)](https://www.youtube.com/watch?v=ZJI3-WJNUB8)
+
+**[▶ Watch the demo](https://www.youtube.com/watch?v=ZJI3-WJNUB8)** · [Earlier demo](https://www.youtube.com/watch?v=6vEJNr8sASI)
 
 ---
 
