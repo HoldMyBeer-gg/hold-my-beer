@@ -124,7 +124,9 @@ impl WorkerHarness {
                         message_queue: Arc::new(Mutex::new(Vec::new())),
                         first_message_time: Arc::new(Mutex::new(None)),
                     };
-                    let _ = harness.spawn_claude(&messages).await;
+                    if let Err(e) = harness.spawn_claude(&messages).await {
+                        harness.log_error(&format!("Failed to process {} messages: {}", messages.len(), e));
+                    }
                 }
             }
         });
@@ -243,7 +245,7 @@ Instructions: Read CLAUDE.md only if you need to remember your rules. Act on the
         );
 
         // Spawn claude
-        let output = Command::new("claude")
+        let output = match Command::new("claude")
             .arg("-p")
             .arg(&prompt)
             .arg("--model")
@@ -251,7 +253,20 @@ Instructions: Read CLAUDE.md only if you need to remember your rules. Act on the
             .arg("--allowedTools")
             .arg("Bash,Read,Write,Edit")
             .current_dir(&self.workdir)
-            .output()?;
+            .output()
+        {
+            Ok(out) => out,
+            Err(e) => {
+                self.log_error(&format!("Failed to spawn claude: {}", e));
+                return Err(e.into());
+            }
+        };
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            self.log_error(&format!("Claude exited with status {}: {}", output.status, stderr));
+            return Err(anyhow::anyhow!("Claude failed: {}", stderr));
+        }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let duration = start.elapsed().as_secs();
@@ -262,7 +277,9 @@ Instructions: Read CLAUDE.md only if you need to remember your rules. Act on the
             if let Some(response) = &collab_output.response {
                 if !response.is_empty() {
                     for msg in messages {
-                        let _ = self.client.add_message(&msg.sender, response, None).await;
+                        if let Err(e) = self.client.add_message(&msg.sender, response, None).await {
+                            self.log_error(&format!("Failed to send response to @{}: {}", msg.sender, e));
+                        }
                     }
                 }
             }
@@ -270,11 +287,15 @@ Instructions: Read CLAUDE.md only if you need to remember your rules. Act on the
             // Delegate tasks
             for task in &collab_output.delegate {
                 let to = task.to.trim_start_matches('@');
-                let _ = self.client.todo_add(to, &task.task).await;
+                if let Err(e) = self.client.todo_add(to, &task.task).await {
+                    self.log_error(&format!("Failed to add todo for @{}: {}", to, e));
+                }
             }
 
             // Update state
             self.save_state(&collab_output.state_update);
+        } else {
+            self.log_error(&format!("No output markers found in claude response (looked for ---COLLAB_OUTPUT--- markers)"));
         }
 
         let response_count = messages.len();
@@ -325,5 +346,23 @@ Instructions: Read CLAUDE.md only if you need to remember your rules. Act on the
     fn log(&self, msg: &str) {
         let now = Utc::now().format("%H:%M:%S UTC");
         println!("[{}] {}", now, msg);
+    }
+
+    fn log_error(&self, msg: &str) {
+        let now = Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+        let log_entry = format!("[{}] @{}: {}\n", now, self.instance_id, msg);
+
+        // Append to error log file
+        use std::io::Write;
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/collab-worker-errors.log")
+        {
+            let _ = file.write_all(log_entry.as_bytes());
+        }
+
+        // Also print to stderr
+        eprintln!("{}", log_entry);
     }
 }
