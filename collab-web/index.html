@@ -158,6 +158,37 @@
     .feed-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80%; gap: 8px; color: var(--dim); font-size: 15px; }
     .feed-empty-icon { font-size: 30px; opacity: .3; }
 
+    /* ─── Todos panel ─────────────────────────────────────────────────────── */
+    #todos-panel { flex: 1; overflow-y: auto; padding: 8px 0; }
+    .todos-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80%; gap: 8px; color: var(--dim); font-size: 15px; }
+    .todos-group { margin-bottom: 4px; }
+    .todos-group-hdr {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 18px 4px;
+      font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--dim);
+    }
+    .todos-group-hdr .tg-name { color: var(--sub); font-size: 14px; font-weight: 700; text-transform: none; letter-spacing: 0; }
+    .todos-group-hdr .tg-count { font-size: 11px; }
+    .todo-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 6px 18px; transition: background var(--t);
+    }
+    .todo-row:hover { background: rgba(255,255,255,.03); }
+    .todo-check {
+      width: 16px; height: 16px; border-radius: 4px; flex-shrink: 0; margin-top: 2px;
+      border: 1.5px solid var(--dim); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color var(--t), background var(--t);
+    }
+    .todo-check:hover { border-color: #22d3ee; background: rgba(34,211,238,.1); }
+    .todo-check svg { display: none; width: 10px; height: 10px; stroke: #22d3ee; }
+    .todo-check:hover svg { display: block; }
+    .todo-body { flex: 1; min-width: 0; }
+    .todo-desc { font-size: 15px; color: var(--text); line-height: 1.5; word-break: break-word; }
+    .todo-meta { display: flex; gap: 8px; margin-top: 2px; font-size: 12px; color: var(--dim-text); flex-wrap: wrap; }
+    .todo-hash { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--dim); }
+    @keyframes todo-done { to { opacity: 0; transform: translateX(8px); } }
+
     /* ─── Load earlier button ─────────────────────────────────────────────── */
     .load-earlier-wrap { display: flex; justify-content: center; padding: 10px 18px 4px; }
     .load-earlier-wrap button {
@@ -433,11 +464,13 @@
       <div class="feed-tabs" role="tablist">
         <button class="feed-tab active" id="tab-all" role="tab" aria-selected="true">All</button>
         <button class="feed-tab" id="tab-mentions" role="tab" aria-selected="false">@mentions <span class="tab-badge" id="inbox-badge"></span></button>
+        <button class="feed-tab" id="tab-tasks" role="tab" aria-selected="false">Tasks <span class="tab-badge" id="tasks-badge"></span></button>
       </div>
       <span class="msg-pill" id="msg-count" aria-live="polite">0 messages</span>
       <span class="msg-pill" id="last-updated" aria-live="polite"></span>
     </div>
     <div class="feed" id="feed" role="log" aria-live="polite" aria-label="Message feed"></div>
+    <div id="todos-panel" role="region" aria-label="Task queue" hidden></div>
     <div class="feed-empty" id="feed-empty">
       <span class="feed-empty-icon" aria-hidden="true">📭</span>
       <span>Waiting for messages…</span>
@@ -891,6 +924,8 @@ const S = {
   timers:      [],
   seenIds:     new Set(),
   inboxMode:   false,
+  tabMode:     'messages', // 'messages' | 'todos'
+  todos:       {},   // instance_id → Todo[]
 };
 
 document.getElementById('server-url').value = S.url;
@@ -1293,6 +1328,7 @@ async function pollAll() {
     await Promise.allSettled(workers.map(w => loadHistory(w.instance_id)));
     checkForPings(getAllMsgs());
     renderFeed();
+    pollTodos();
     document.getElementById('last-updated').textContent = 'updated ' + new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});
   } catch (e) { console.error('[pollAll]', e); setConn('err'); }
 }
@@ -1371,6 +1407,7 @@ function startPolling() {
   startSSE();       // then switch to SSE for live messages
   S.timers.push(setInterval(pollRoster, 30000));   // roster only, every 30s
   S.timers.push(setInterval(heartbeat, 30000));
+  S.timers.push(setInterval(pollTodos, 30000));    // todos, every 30s
 }
 
 // ── Avatar picker ─────────────────────────────────────────────────────────────
@@ -1820,17 +1857,104 @@ document.getElementById('feed').addEventListener('click', e => {
   if (img) window.open(img.src, '_blank');
 });
 
-function switchTab(toMentions) {
+// ── Todos ──────────────────────────────────────────────────────────────────────
+async function loadTodos(id) {
+  try { S.todos[id] = await api(`/todos/${id}`); } catch { S.todos[id] = []; }
+}
+
+async function pollTodos() {
+  if (!S.workers.length) return;
+  await Promise.allSettled(S.workers.map(w => loadTodos(w.instance_id)));
+  const total = Object.values(S.todos).reduce((n, arr) => n + arr.length, 0);
+  document.getElementById('tasks-badge').textContent = total || '';
+  if (S.tabMode === 'todos') renderTodos();
+}
+
+function renderTodos() {
+  const panel = document.getElementById('todos-panel');
+  const allTodos = Object.entries(S.todos).filter(([,arr]) => arr.length > 0);
+  if (!allTodos.length) {
+    panel.innerHTML = '<div class="todos-empty"><span style="font-size:30px;opacity:.3">✅</span><span>No pending tasks</span></div>';
+    return;
+  }
+  let html = '';
+  for (const [instance, todos] of allTodos) {
+    const hex = assignColor(instance);
+    html += `<div class="todos-group">`;
+    html += `<div class="todos-group-hdr"><span class="tg-name" style="color:${esc(hex)}">@${esc(instance)}</span><span class="tg-count">${todos.length} pending</span></div>`;
+    for (const t of todos) {
+      const shortHash = t.hash.slice(0, 7);
+      const age = timeAgo(t.created_at);
+      html += `<div class="todo-row" data-hash="${esc(t.hash)}" data-instance="${esc(instance)}">`;
+      html += `<div class="todo-check" title="Mark done" role="button" tabindex="0" aria-label="Mark task done">`;
+      html += `<svg viewBox="0 0 12 12" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,6 5,9 10,3"/></svg>`;
+      html += `</div>`;
+      html += `<div class="todo-body">`;
+      html += `<div class="todo-desc">${esc(t.description)}</div>`;
+      html += `<div class="todo-meta"><span class="todo-hash">${esc(shortHash)}</span><span>from @${esc(t.assigned_by)}</span><span>${esc(age)}</span></div>`;
+      html += `</div></div>`;
+    }
+    html += `</div>`;
+  }
+  panel.innerHTML = html;
+}
+
+document.getElementById('todos-panel').addEventListener('click', async e => {
+  const check = e.target.closest('.todo-check');
+  if (!check) return;
+  const row = check.closest('.todo-row');
+  const hash = row?.dataset.hash;
+  const instance = row?.dataset.instance;
+  if (!hash || !instance) return;
+  try {
+    await api(`/todos/${hash.slice(0,7)}/done`, { method: 'PATCH' });
+    row.style.animation = 'todo-done .2s ease-out forwards';
+    setTimeout(() => {
+      S.todos[instance] = (S.todos[instance] || []).filter(t => t.hash !== hash);
+      const total = Object.values(S.todos).reduce((n, arr) => n + arr.length, 0);
+      document.getElementById('tasks-badge').textContent = total || '';
+      renderTodos();
+    }, 220);
+  } catch (err) {
+    announce(err.message?.includes('409') ? 'Already marked done' : 'Failed to complete task');
+  }
+});
+
+document.getElementById('todos-panel').addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    const check = e.target.closest('.todo-check');
+    if (check) { e.preventDefault(); check.click(); }
+  }
+});
+
+function switchTab(mode) {
+  const toMentions = mode === 'mentions';
+  const toTodos    = mode === 'todos';
   S.inboxMode = toMentions;
-  document.getElementById('tab-all').classList.toggle('active', !toMentions);
-  document.getElementById('tab-all').setAttribute('aria-selected', String(!toMentions));
+  S.tabMode   = toTodos ? 'todos' : 'messages';
+
+  document.getElementById('tab-all').classList.toggle('active', mode === 'all');
+  document.getElementById('tab-all').setAttribute('aria-selected', String(mode === 'all'));
   document.getElementById('tab-mentions').classList.toggle('active', toMentions);
   document.getElementById('tab-mentions').setAttribute('aria-selected', String(toMentions));
-  document.getElementById('feed').dataset.count = 0;
-  renderFeed();
+  document.getElementById('tab-tasks').classList.toggle('active', toTodos);
+  document.getElementById('tab-tasks').setAttribute('aria-selected', String(toTodos));
+
+  document.getElementById('feed').hidden        = toTodos;
+  document.getElementById('feed-empty').hidden  = toTodos;
+  document.getElementById('todos-panel').hidden = !toTodos;
+  document.querySelector('.compose-bar').hidden = toTodos;
+
+  if (!toTodos) {
+    document.getElementById('feed').dataset.count = 0;
+    renderFeed();
+  } else {
+    renderTodos();
+  }
 }
-document.getElementById('tab-all').addEventListener('click', () => switchTab(false));
-document.getElementById('tab-mentions').addEventListener('click', () => switchTab(true));
+document.getElementById('tab-all').addEventListener('click', () => switchTab('all'));
+document.getElementById('tab-mentions').addEventListener('click', () => switchTab('mentions'));
+document.getElementById('tab-tasks').addEventListener('click', () => switchTab('todos'));
 
 // Re-compute inbox count when your name changes
 document.getElementById('compose-name').addEventListener('input', () => renderFeed());
