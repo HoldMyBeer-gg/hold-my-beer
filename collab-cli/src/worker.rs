@@ -390,12 +390,14 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
 
         // Parse structured output
         if let Some(collab_output) = self.parse_collab_output(&stdout) {
-            // Send response
+            // Send response (but don't reply to yourself — that causes loops)
             if let Some(response) = &collab_output.response {
                 if !response.is_empty() {
                     for msg in messages {
-                        if let Err(e) = self.client.add_message(&msg.sender, response, None).await {
-                            self.log_error(&format!("Failed to send response to @{}: {}", msg.sender, e));
+                        if msg.sender != self.instance_id {
+                            if let Err(e) = self.client.add_message(&msg.sender, response, None).await {
+                                self.log_error(&format!("Failed to send response to @{}: {}", msg.sender, e));
+                            }
                         }
                     }
                 }
@@ -448,12 +450,15 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
             self.save_state(&collab_output.state_update);
         } else {
             // Fallback: no markers found — treat entire stdout as the response
+            // But don't reply to self (boot messages)
             let raw = stdout.trim().to_string();
             if !raw.is_empty() {
                 self.log(&format!("no markers — sending raw response"));
                 for msg in messages {
-                    if let Err(e) = self.client.add_message(&msg.sender, &raw, None).await {
-                        self.log_error(&format!("Failed to send response to @{}: {}", msg.sender, e));
+                    if msg.sender != self.instance_id {
+                        if let Err(e) = self.client.add_message(&msg.sender, &raw, None).await {
+                            self.log_error(&format!("Failed to send response to @{}: {}", msg.sender, e));
+                        }
                     }
                 }
             }
