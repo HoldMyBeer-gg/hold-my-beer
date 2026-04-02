@@ -29,6 +29,9 @@ pub struct WorkerState {
     pub pending: Option<String>,
     #[serde(default)]
     pub files_touched: Vec<String>,
+    /// Shown on roster — what this worker is currently doing
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -95,6 +98,9 @@ impl WorkerHarness {
     }
 
     pub async fn run(&self) -> Result<()> {
+        // Shared status string for dynamic roster presence
+        let current_status = Arc::new(Mutex::new(self.get_role()));
+
         // Spawn batch processor task that wakes on timer
         let queue = self.message_queue.clone();
         let first_time = self.first_message_time.clone();
@@ -106,6 +112,7 @@ impl WorkerHarness {
         let auto_reply = self.auto_reply;
         let hands_off_to = self.hands_off_to.clone();
         let teammates = self.teammates.clone();
+        let batch_status = current_status.clone();
 
         tokio::spawn(async move {
             loop {
@@ -146,16 +153,22 @@ impl WorkerHarness {
                     if let Err(e) = harness.spawn_claude(&messages).await {
                         harness.log_error(&format!("Failed to process {} messages: {}", messages.len(), e));
                     }
+                    // Update roster presence from worker state
+                    let state = harness.load_state();
+                    if let Some(status) = &state.status {
+                        *batch_status.lock().await = status.clone();
+                    }
                 }
             }
         });
 
-        // Heartbeat presence every 30s
+        // Heartbeat presence every 30s — role updates dynamically from worker state
         let hb_client = self.client.clone();
-        let hb_role = self.get_role();
+        let hb_status = current_status.clone();
         tokio::spawn(async move {
             loop {
-                let _ = hb_client.heartbeat(Some(&hb_role)).await;
+                let role = hb_status.lock().await.clone();
+                let _ = hb_client.heartbeat(Some(&role)).await;
                 sleep(Duration::from_secs(30)).await;
             }
         });
@@ -328,7 +341,7 @@ Fields:
 - delegate: assign new tasks to teammates (optional, default [])
 - completed_tasks: task hashes you finished from your pending tasks (optional, default [])
 - continue: true to keep working, false when blocked or done
-- state_update: any state to persist for your next invocation (optional, default {{}})
+- state_update: any state to persist for your next invocation (optional, default {{}}). Include a \"status\" field to update your roster presence (e.g. \"working on tooltip CSS\")
 
 Do NOT run any collab CLI commands. The harness handles all messaging and task delivery. Focus on your actual work.",
             self.instance_id,
