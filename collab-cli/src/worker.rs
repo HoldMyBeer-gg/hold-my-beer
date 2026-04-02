@@ -389,11 +389,12 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
 
         // Parse structured output
         if let Some(collab_output) = self.parse_collab_output(&stdout) {
-            // Send response (but don't reply to yourself — that causes loops)
+            // Send response once per unique sender (skip self)
             if let Some(response) = &collab_output.response {
                 if !response.is_empty() {
+                    let mut replied: std::collections::HashSet<&str> = std::collections::HashSet::new();
                     for msg in messages {
-                        if msg.sender != self.instance_id {
+                        if msg.sender != self.instance_id && replied.insert(&msg.sender) {
                             if let Err(e) = self.client.add_message(&msg.sender, response, None).await {
                                 self.log_error(&format!("Failed to send response to @{}: {}", msg.sender, e));
                             }
