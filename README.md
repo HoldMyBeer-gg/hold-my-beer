@@ -45,7 +45,7 @@ The `cli_template` tells workers which AI CLI to invoke. Replace `claude` with y
 
 ```bash
 collab init workers.yaml
-# Creates: .collab/workers.json, ./workers/frontend/CLAUDE.md, ./workers/backend/CLAUDE.md
+# Creates: .collab/workers.json, ./workers/frontend/AGENT.md, ./workers/backend/AGENT.md
 ```
 
 ### 2. Start the server (keep running)

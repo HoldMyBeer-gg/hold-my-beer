@@ -79,7 +79,7 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
         std::fs::create_dir_all(&dir)?;
         let worker_model = worker.model.as_ref().unwrap_or(&config.model).clone();
         let md = render_claude_md(worker, &config.workers, &config.server, &config.codebase_path, &worker_model);
-        let path = dir.join("CLAUDE.md");
+        let path = dir.join("AGENT.md");
         std::fs::write(&path, md)?;
         println!("  ✓  {}", path.display());
     }
@@ -109,7 +109,7 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
     println!("\nNext steps:");
     println!("  1. Start the collab server:    collab-server");
     println!("  2. Open each worker directory as a Claude Code project");
-    println!("  3. Each worker's CLAUDE.md has full instructions");
+    println!("  3. Each worker's AGENT.md has full instructions");
     println!("  4. Import dashboard-config.json via the ⬆ button in collab-web/index.html");
     Ok(())
 }
@@ -171,7 +171,7 @@ fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, c
 
 ## Identity
 
-You are **{name}**, a Claude Code worker instance in a multi-worker collaboration.
+You are **{name}**, a worker instance in a multi-worker collaboration.
 
 **Your role:** {role}
 
@@ -189,7 +189,7 @@ export COLLAB_TOKEN="<your-token-from-jabberwock>"
 
 **Do this every session.** Add to your shell profile if you want to skip it later, but start with copy-paste so you learn the three required variables.
 
-💡 **Where to get COLLAB_TOKEN:** Ask @jabberwock — it's generated when the server starts. Keep it secret.
+💡 **Where to get COLLAB_TOKEN:** Ask your team lead — it's generated when the server starts. Keep it secret.
 
 ## Team
 
@@ -213,9 +213,9 @@ Start the headless worker to listen for messages and respond automatically. Run 
 {workdir_cmd}
 ```
 
-This spawns Claude on demand when messages arrive, batches rapid bursts, auto-replies to trivial messages, and maintains state across restarts. **IMPORTANT:** The worker needs:
+This spawns your configured CLI tool on demand when messages arrive, batches rapid bursts, auto-replies to trivial messages, and maintains state across restarts. **IMPORTANT:** The worker needs:
 - Your environment variables set (step 1) ✓
-- `claude` CLI installed and in your PATH
+- Your CLI tool installed and in your PATH (configured via `cli_template` in workers.yaml)
 - A working internet connection to collab server
 
 If the worker fails silently, check `/tmp/collab-worker-errors.log` for diagnosis.

@@ -617,14 +617,15 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
     }
 
     fn get_role(&self) -> String {
-        // Try to read from CLAUDE.md
-        let claude_md = self.workdir.join("CLAUDE.md");
-        if let Ok(contents) = std::fs::read_to_string(&claude_md) {
-            // Extract first line after "Your role:"
-            for line in contents.lines() {
-                if line.contains("Your role:") {
-                    if let Some(rest) = line.split("Your role:").nth(1) {
-                        return rest.trim().trim_end_matches('*').to_string();
+        // Try AGENT.md first, fall back to CLAUDE.md for existing setups
+        for filename in &["AGENT.md", "CLAUDE.md"] {
+            let path = self.workdir.join(filename);
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                for line in contents.lines() {
+                    if line.contains("Your role:") {
+                        if let Some(rest) = line.split("Your role:").nth(1) {
+                            return rest.trim().trim_end_matches('*').to_string();
+                        }
                     }
                 }
             }

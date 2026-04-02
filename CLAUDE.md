@@ -152,7 +152,7 @@ workers:
 
 The `cli_template` field controls which CLI tool workers use to process messages. Placeholders: `{prompt}`, `{model}`, `{workdir}`. Per-worker templates override the project default.
 
-Creates a `.collab/workers.json` manifest and CLAUDE.md files in each worker directory.
+Creates a `.collab/workers.json` manifest and AGENT.md files in each worker directory.
 
 ### `collab start <TARGET>`
 

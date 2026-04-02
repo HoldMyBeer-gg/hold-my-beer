@@ -256,7 +256,7 @@ fn draw_welcome(f: &mut Frame, _: &WizardState, area: Rect) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Creates a CLAUDE.md for each worker:",
+            "  Creates an AGENT.md for each worker:",
             Style::default().fg(Color::Gray),
         )),
         Line::from(Span::styled(
@@ -458,7 +458,7 @@ fn draw_review(f: &mut Frame, state: &WizardState, area: Rect) {
             Span::styled(w.role.clone(), Style::default().fg(Color::Gray)),
         ]));
         lines.push(Line::from(Span::styled(
-            format!("      → {}/{}/CLAUDE.md", state.output_dir, w.name),
+            format!("      → {}/{}/AGENT.md", state.output_dir, w.name),
             Style::default().fg(DIM),
         )));
     }
