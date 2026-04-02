@@ -151,7 +151,7 @@ impl WorkerHarness {
         });
 
         // Auto-kick: send self a boot message so workers start immediately
-        if let Err(e) = self.client.add_message(&self.instance_id, "Session start — check your todos and begin working. Use continue:true to keep going.", None).await {
+        if let Err(e) = self.client.add_message(&self.instance_id, "Session start. You MUST check your pending tasks and start working on them immediately. Set continue:true in your output to keep working through your task list. Only set continue:false when you are genuinely blocked on someone else or have zero tasks left.", None).await {
             self.log_error(&format!("Failed to send boot message: {}", e));
         }
 
