@@ -39,32 +39,62 @@ cp collab-cli/target/release/collab /usr/local/bin/
 
 ## Quick Start
 
-### 1. Start the Server
+### 1. Initialize Workers
 
-```bash
-collab-server
+Start with a simple YAML config that defines your worker roles:
+
+```yaml
+# workers.yaml
+server: http://localhost:8000
+workers:
+  - name: frontend
+    role: "Build the React UI and manage component state"
+  - name: backend
+    role: "Implement REST API endpoints and database queries"
 ```
 
-The server starts on `http://localhost:8000` and creates a `collab.db` SQLite database.
+Then initialize the workers:
 
-### 2. Send Your First Message
+```bash
+collab init workers.yaml
+```
+
+This creates a `.collab/` directory with worker configurations in your project.
+
+### 2. Start the Server and Workers
+
+```bash
+# Terminal 1: Start the server
+collab-server
+
+# Terminal 2: Start all workers
+collab start all
+```
+
+Check that workers are running:
+
+```bash
+collab lifecycle-status
+```
+
+### 3. Send Your First Message
 
 ```bash
 # Set your worker instance ID
-export COLLAB_INSTANCE=worker1
+export COLLAB_INSTANCE=frontend
 
 # Send a message to another worker
-collab add @worker2 "Fixed the authentication bug in login.rs"
+collab add @backend "Fixed the authentication bug in login.rs"
 ```
 
-### 3. Check Messages
+### 4. Check Messages
 
 ```bash
 # List messages for your instance
 collab list
 
-# Watch for new messages (polls every 30 seconds)
-collab watch
+# Stream incoming messages in real-time
+collab stream
 ```
 
 ## CLI Usage
@@ -108,45 +138,150 @@ collab add @worker2 "Applied your suggestions" \
 **Options:**
 - `--refs <HASH1,HASH2>`: Reference previous message hashes (comma-separated)
 
-#### `collab watch`
+#### `collab stream`
 
-Continuously poll for new messages every 30 seconds. This is the recommended way to monitor incoming messages during active collaboration.
+Stream incoming messages in real-time via Server-Sent Events (SSE). Zero-polling alternative to `watch` that survives backgrounding.
 
 ```bash
-# Watch with default 30-second interval
-collab watch
-
-# Watch with custom interval (e.g., every 10 seconds)
-collab watch --interval 10
+# Stream messages and set your role
+collab stream --role "Building API endpoints"
 ```
 
 **Output:**
 ```
-👀 Watching for messages to @worker1 (polling every 30 seconds)
-Press Ctrl+C to stop
-
+🔌 Streaming messages for @backend
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🔔 New message!
 Hash: b3d5c3a...
-From: @worker2
+From: @frontend
 Time: 2024-03-27 14:35:12 UTC
 
-Database schema updated, please pull changes
+Fixed the auth redirect issue
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+#### `collab watch` (deprecated)
+
+Continuously poll for new messages every 10 seconds. Use `collab stream` instead for real-time, zero-poll delivery.
+
+```bash
+# Watch with custom interval (e.g., every 5 seconds)
+collab watch --interval 5
+```
+
+### Worker Lifecycle Commands
+
+#### `collab init [FILE]`
+
+Set up worker environments from a YAML config or interactive wizard.
+
+```bash
+# From a YAML file
+collab init workers.yaml
+
+# Interactive wizard (if 'monitor' feature is enabled)
+collab init
+```
+
+**YAML Format:**
+```yaml
+server: http://localhost:8000
+output_dir: ./workers     # optional — where to create worker directories
+workers:
+  - name: frontend
+    role: "Build the React UI and manage component state"
+  - name: backend
+    role: "Implement REST API endpoints and database queries"
+```
+
+Creates a `.collab/workers.json` manifest and CLAUDE.md files in each worker directory.
+
+#### `collab start <TARGET>`
+
+Start worker process(es) in the background.
+
+```bash
+# Start a specific worker
+collab start @frontend
+
+# Start all workers
+collab start all
+```
+
+Workers run as background processes managed by the collab system. Each worker receives incoming messages via `collab stream` and can process them with configured Claude Code instances.
+
+#### `collab stop <TARGET>`
+
+Stop running worker process(es).
+
+```bash
+# Stop a specific worker
+collab stop @backend
+
+# Stop all workers
+collab stop all
+```
+
+#### `collab restart <TARGET>`
+
+Stop and restart worker process(es).
+
+```bash
+# Restart a specific worker
+collab restart @frontend
+
+# Restart all workers
+collab restart all
+```
+
+#### `collab lifecycle-status`
+
+Show all running worker processes, their PIDs, and startup timestamps.
+
+```bash
+collab lifecycle-status
+```
+
+**Output:**
+```
+Running workers:
+  frontend (PID: 12345)
+    Started: 2024-03-27 14:25:10 UTC
+    Command: collab worker --workdir ./workers/frontend --model haiku
+  backend (PID: 12346)
+    Started: 2024-03-27 14:25:11 UTC
+    Command: collab worker --workdir ./workers/backend --model haiku
+```
+
+### Configuration
+
+Configuration can be provided via (in priority order):
+
+1. **CLI flags**: `--instance`, `--server`
+2. **Environment variables**: `$COLLAB_INSTANCE`, `$COLLAB_SERVER`, `$COLLAB_TOKEN`
+3. **.env file**: `.env` in your project (auto-loaded from cwd or parent directories)
+4. **Config file**: `.collab.toml` in your project or `~/.collab.toml` globally
+
+**Example ~/.collab.toml:**
+```toml
+host = "http://localhost:8000"
+instance = "frontend"
+token = "optional-auth-token"
+recipients = ["backend", "database"]
+```
+
+**Example .env file:**
+```bash
+COLLAB_INSTANCE=frontend
+COLLAB_SERVER=http://localhost:8000
+COLLAB_TOKEN=your-auth-token
 ```
 
 ### Global Options
 
 - `--server <URL>`: Server URL (default: `http://localhost:8000`)
-- `--instance <ID>`: Your worker instance identifier (required)
-
-### Environment Variables
-
-```bash
-# Set these in your shell profile for convenience
-export COLLAB_INSTANCE=worker1
-export COLLAB_SERVER=http://localhost:8000
-```
+- `--instance <ID>`: Your worker instance identifier (required for most commands)
+- `--help`: Show command help
 
 ## Message Format
 
@@ -174,14 +309,41 @@ collab add @worker1 "Fixed the bug you mentioned" --refs abc123...
 
 ## Use Cases
 
-### Scenario 1: Bug Fix Coordination
+### Scenario 1: Multi-Worker Setup
 
-**Worker 1** (Frontend):
+Initialize workers and start them all:
+
 ```bash
+# 1. Create workers.yaml
+cat > workers.yaml <<EOF
+server: http://localhost:8000
+workers:
+  - name: frontend
+    role: "React UI and component state"
+  - name: backend
+    role: "REST API and database queries"
+EOF
+
+# 2. Initialize and start
+collab init workers.yaml
+collab start all
+
+# 3. Set up environment for frontend worker
+export COLLAB_INSTANCE=frontend
+
+# 4. Stream messages in a dedicated terminal
+collab stream --role "Building authentication UI"
+```
+
+### Scenario 2: Bug Fix Coordination
+
+**Frontend worker**:
+```bash
+export COLLAB_INSTANCE=frontend
 collab add @backend "Authentication redirects to 404 after login"
 ```
 
-**Worker 2** (Backend):
+**Backend worker** (receives notification via `collab stream`):
 ```bash
 collab list
 # Sees the message, fixes the route
@@ -190,39 +352,30 @@ collab add @frontend "Fixed route in auth.rs - commit a7b3c2" \
   --refs <hash-from-frontend-message>
 ```
 
-**Worker 1** (Frontend):
+**Frontend worker** (sees notification in streaming session):
 ```bash
-collab watch
-# Sees the fix notification, pulls changes
+# Message appears automatically in the collab stream terminal
+# Pulls changes and tests
 ```
 
-### Scenario 2: Schema Migration
-
-**Worker 1** (Database):
-```bash
-collab add @api "Running migration - users table gets email_verified column"
-```
-
-**Worker 2** (API):
-```bash
-collab watch
-# Sees notification
-# Waits for migration to complete
-
-collab add @database "Ready to deploy API changes"
-```
-
-### Scenario 3: Continuous Collaboration
-
-Start watching in the background while working:
+### Scenario 3: Continuous Collaboration with Background Workers
 
 ```bash
-# Terminal 1: Your Claude Code session working on features
-# Terminal 2: Watch for messages
-collab watch
+# Terminal 1: Start the server
+collab-server
 
-# Other workers can now notify you of important changes
-# You'll see messages appear in real-time
+# Terminal 2: Start all workers
+collab start all
+
+# Terminal 3+: Stream messages for each worker
+export COLLAB_INSTANCE=frontend
+collab stream --role "Building API integration"
+
+# Terminal 4+: Work on code, send messages
+export COLLAB_INSTANCE=backend
+collab add @frontend "API endpoints ready for integration"
+
+# Receive notifications in the frontend stream terminal in real-time
 ```
 
 ## Message Retention
@@ -319,23 +472,54 @@ collab add @frontend "Updated API endpoint in users.ts:45 - now returns 201 inst
 
 ## Troubleshooting
 
+### Instance ID Required
+
+**Problem:** `Instance ID required. Set via --instance, $COLLAB_INSTANCE, or ~/.collab.toml`
+
+**Solution:** Set your instance ID before running commands:
+```bash
+# Option 1: Environment variable
+export COLLAB_INSTANCE=frontend
+
+# Option 2: CLI flag
+collab --instance frontend list
+
+# Option 3: Config file (~/.collab.toml)
+echo 'instance = "frontend"' >> ~/.collab.toml
+```
+
 ### Connection Refused
 
 **Problem:** `Connection error: connection refused`
 
-**Solution:** Ensure the server is running:
+**Solution:** Ensure the server is running in a separate terminal:
 ```bash
 collab-server
 ```
+
+You should see: `Server listening on http://127.0.0.1:8000`
+
+### Workers Not Starting
+
+**Problem:** `collab start all` fails or workers don't appear in `collab lifecycle-status`
+
+**Solution:**
+1. Verify you ran `collab init` in your project directory
+2. Check that `.collab/workers.json` exists:
+   ```bash
+   cat .collab/workers.json
+   ```
+3. Verify your instance IDs match the worker names defined in `workers.yaml`
 
 ### No Messages Appearing
 
 **Problem:** Running `collab list` shows no messages.
 
 **Solution:**
-1. Verify you're using the correct instance ID
-2. Check messages were sent in the last hour
-3. Confirm messages were sent TO your instance ID
+1. Verify you're using the correct instance ID: `echo $COLLAB_INSTANCE`
+2. Check that messages were sent in the last hour (messages older than 1 hour are auto-purged)
+3. Confirm messages were addressed TO your instance ID
+4. Verify the server is running and reachable
 
 ### Server Not Starting
 
@@ -345,6 +529,7 @@ collab-server
 ```bash
 lsof -i :8000
 # Kill the process or change server port
+collab-server --port 8001
 ```
 
 ## Architecture
