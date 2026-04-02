@@ -150,6 +150,11 @@ impl WorkerHarness {
             }
         });
 
+        // Auto-kick: send self a boot message so workers start immediately
+        if let Err(e) = self.client.add_message(&self.instance_id, "Session start — check your todos and begin working. Use continue:true to keep going.", None).await {
+            self.log_error(&format!("Failed to send boot message: {}", e));
+        }
+
         let mut backoff_secs = 1u64;
 
         loop {
