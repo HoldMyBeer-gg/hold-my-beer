@@ -37,15 +37,89 @@ cp collab-server/target/release/collab-server /usr/local/bin/
 cp collab-cli/target/release/collab /usr/local/bin/
 ```
 
-## Quick Start
+## Watch the Demo
 
-### 1. Initialize Workers
+[TODO: YouTube demo video showing full workflow]
 
-Start with a simple YAML config that defines your worker roles:
+## Quick Start (5 minutes)
+
+### Step 1: Initialize Your Workers
+
+Create a `workers.yaml` file in your project:
 
 ```yaml
-# workers.yaml
 server: http://localhost:8000
+workers:
+  - name: frontend
+    role: "Frontend development"
+  - name: backend
+    role: "Backend API development"
+```
+
+Run initialization:
+
+```bash
+collab init workers.yaml
+```
+
+### Step 2: Start Everything
+
+```bash
+# Terminal 1: Start the server
+collab-server
+
+# Terminal 2: Start all workers with collab start
+collab start all
+
+# Verify workers started
+collab lifecycle-status
+```
+
+Output:
+```
+Running workers:
+  frontend (PID: 12345)
+  backend (PID: 12346)
+```
+
+### Step 3: Send and Receive Messages
+
+**In Terminal 3:**
+```bash
+export COLLAB_INSTANCE=frontend
+collab stream --role "Building login UI"
+```
+
+**In Terminal 4:**
+```bash
+export COLLAB_INSTANCE=backend
+collab add @frontend "Login endpoint ready at POST /auth/login"
+```
+
+You'll see the message appear instantly in Terminal 3.
+
+That's it. You now have two independent Claude workers collaborating in real-time.
+
+## Worker Management
+
+These commands manage the lifecycle of worker processes:
+
+### `collab init [FILE]`
+
+Set up worker environments from a YAML config or interactive wizard.
+
+```bash
+# From a YAML file
+collab init workers.yaml
+
+# Interactive wizard (if 'monitor' feature is enabled)
+collab init
+```
+
+**YAML Format:**
+```yaml
+server: http://localhost:8000
+output_dir: ./workers     # optional — where to create worker directories
 workers:
   - name: frontend
     role: "Build the React UI and manage component state"
@@ -53,55 +127,70 @@ workers:
     role: "Implement REST API endpoints and database queries"
 ```
 
-Then initialize the workers:
+Creates a `.collab/workers.json` manifest and CLAUDE.md files in each worker directory.
+
+### `collab start <TARGET>`
+
+Start worker process(es) in the background.
 
 ```bash
-collab init workers.yaml
-```
+# Start a specific worker
+collab start @frontend
 
-This creates a `.collab/` directory with worker configurations in your project.
-
-### 2. Start the Server and Workers
-
-```bash
-# Terminal 1: Start the server
-collab-server
-
-# Terminal 2: Start all workers
+# Start all workers
 collab start all
 ```
 
-Check that workers are running:
+Workers run as background processes managed by the collab system. Each worker receives incoming messages via `collab stream` and can process them with configured Claude Code instances.
+
+### `collab stop <TARGET>`
+
+Stop running worker process(es).
+
+```bash
+# Stop a specific worker
+collab stop @backend
+
+# Stop all workers
+collab stop all
+```
+
+### `collab restart <TARGET>`
+
+Stop and restart worker process(es).
+
+```bash
+# Restart a specific worker
+collab restart @frontend
+
+# Restart all workers
+collab restart all
+```
+
+### `collab lifecycle-status`
+
+Show all running worker processes, their PIDs, and startup timestamps.
 
 ```bash
 collab lifecycle-status
 ```
 
-### 3. Send Your First Message
-
-```bash
-# Set your worker instance ID
-export COLLAB_INSTANCE=frontend
-
-# Send a message to another worker
-collab add @backend "Fixed the authentication bug in login.rs"
+**Output:**
+```
+Running workers:
+  frontend (PID: 12345)
+    Started: 2024-03-27 14:25:10 UTC
+    Command: collab worker --workdir ./workers/frontend --model haiku
+  backend (PID: 12346)
+    Started: 2024-03-27 14:25:11 UTC
+    Command: collab worker --workdir ./workers/backend --model haiku
 ```
 
-### 4. Check Messages
+## Messaging Commands
 
-```bash
-# List messages for your instance
-collab list
+These commands send and receive messages between workers:
 
-# Stream incoming messages in real-time
-collab stream
-```
-
-## CLI Usage
-
-### Commands
-
-#### `collab list`
+### `collab list`
 
 List all messages intended for your instance from the last hour.
 
@@ -169,93 +258,9 @@ Continuously poll for new messages every 10 seconds. Use `collab stream` instead
 collab watch --interval 5
 ```
 
-### Worker Lifecycle Commands
+## Configuration
 
-#### `collab init [FILE]`
-
-Set up worker environments from a YAML config or interactive wizard.
-
-```bash
-# From a YAML file
-collab init workers.yaml
-
-# Interactive wizard (if 'monitor' feature is enabled)
-collab init
-```
-
-**YAML Format:**
-```yaml
-server: http://localhost:8000
-output_dir: ./workers     # optional — where to create worker directories
-workers:
-  - name: frontend
-    role: "Build the React UI and manage component state"
-  - name: backend
-    role: "Implement REST API endpoints and database queries"
-```
-
-Creates a `.collab/workers.json` manifest and CLAUDE.md files in each worker directory.
-
-#### `collab start <TARGET>`
-
-Start worker process(es) in the background.
-
-```bash
-# Start a specific worker
-collab start @frontend
-
-# Start all workers
-collab start all
-```
-
-Workers run as background processes managed by the collab system. Each worker receives incoming messages via `collab stream` and can process them with configured Claude Code instances.
-
-#### `collab stop <TARGET>`
-
-Stop running worker process(es).
-
-```bash
-# Stop a specific worker
-collab stop @backend
-
-# Stop all workers
-collab stop all
-```
-
-#### `collab restart <TARGET>`
-
-Stop and restart worker process(es).
-
-```bash
-# Restart a specific worker
-collab restart @frontend
-
-# Restart all workers
-collab restart all
-```
-
-#### `collab lifecycle-status`
-
-Show all running worker processes, their PIDs, and startup timestamps.
-
-```bash
-collab lifecycle-status
-```
-
-**Output:**
-```
-Running workers:
-  frontend (PID: 12345)
-    Started: 2024-03-27 14:25:10 UTC
-    Command: collab worker --workdir ./workers/frontend --model haiku
-  backend (PID: 12346)
-    Started: 2024-03-27 14:25:11 UTC
-    Command: collab worker --workdir ./workers/backend --model haiku
-```
-
-### Configuration
-
-Configuration can be provided via (in priority order):
+Configuration can be provided via (in priority order, top of list wins):
 
 1. **CLI flags**: `--instance`, `--server`
 2. **Environment variables**: `$COLLAB_INSTANCE`, `$COLLAB_SERVER`, `$COLLAB_TOKEN`
