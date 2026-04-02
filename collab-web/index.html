@@ -1326,7 +1326,8 @@ async function pollAll() {
     S.workers = workers;
     renderMembers();
     await Promise.allSettled(workers.map(w => loadHistory(w.instance_id)));
-    checkForPings(getAllMsgs());
+    // Mark all messages as seen (no sound on poll — only SSE triggers pings)
+    for (const m of getAllMsgs()) S.seenIds.add(m.id);
     renderFeed();
     pollTodos();
     document.getElementById('last-updated').textContent = 'updated ' + new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});
