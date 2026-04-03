@@ -392,7 +392,7 @@ async fn main() -> Result<()> {
         })?;
 
         // Load manifest for pipeline config, teammate info, and cli_template fallback
-        let (hands_off_to, teammates, manifest_cli_template) = match find_manifest() {
+        let (hands_off_to, teammates, manifest_cli_template, manifest_cli_template_light) = match find_manifest() {
             Ok(manifest_path) => {
                 match lifecycle::read_manifest(&manifest_path) {
                     Ok(manifest) => {
@@ -402,15 +402,17 @@ async fn main() -> Result<()> {
                             .unwrap_or_default();
                         let tmpl = entry
                             .and_then(|w| w.cli_template.clone());
+                        let tmpl_light = entry
+                            .and_then(|w| w.cli_template_light.clone());
                         let team: Vec<(String, String)> = manifest.iter()
                             .map(|w| (w.name.clone(), w.role.clone()))
                             .collect();
-                        (hands_off, team, tmpl)
+                        (hands_off, team, tmpl, tmpl_light)
                     }
-                    Err(_) => (vec![], vec![], None),
+                    Err(_) => (vec![], vec![], None, None),
                 }
             }
-            Err(_) => (vec![], vec![], None),
+            Err(_) => (vec![], vec![], None, None),
         };
 
         // Priority: CLI flag > manifest > default
@@ -422,6 +424,7 @@ async fn main() -> Result<()> {
             workdir,
             model,
             resolved_cli_template,
+            manifest_cli_template_light,
             auto_reply,
             batch_wait,
             hands_off_to,
@@ -475,11 +478,14 @@ async fn main() -> Result<()> {
         }
 
         let content = std::fs::read_to_string(&log_path)?;
-        let mut per_worker: std::collections::HashMap<String, (u64, u64, u64, u32, String)> = std::collections::HashMap::new();
+        // (input_tokens, output_tokens, duration_secs, call_count, cli_name, light_calls, full_calls)
+        let mut per_worker: std::collections::HashMap<String, (u64, u64, u64, u32, String, u32, u32)> = std::collections::HashMap::new();
         let mut total_input: u64 = 0;
         let mut total_output: u64 = 0;
         let mut total_duration: u64 = 0;
         let mut total_calls: u32 = 0;
+        let mut total_light: u32 = 0;
+        let mut total_full: u32 = 0;
 
         for line in content.lines() {
             if line.len() > 1024 || line.is_empty() { continue; }
@@ -494,18 +500,21 @@ async fn main() -> Result<()> {
                 let inp: u64 = cols[3].parse().unwrap_or(0);
                 let out: u64 = cols[4].parse().unwrap_or(0);
                 let model = if cols.len() >= 6 { cols[5].to_string() } else { "?".to_string() };
+                let tier = if cols.len() >= 7 { cols[6] } else { "full" };
 
                 total_input += inp;
                 total_output += out;
                 total_duration += dur;
                 total_calls += 1;
+                if tier == "light" { total_light += 1; } else { total_full += 1; }
 
-                let entry = per_worker.entry(worker).or_insert((0, 0, 0, 0, model.clone()));
+                let entry = per_worker.entry(worker).or_insert((0, 0, 0, 0, model.clone(), 0, 0));
                 entry.0 += inp;
                 entry.1 += out;
                 entry.2 += dur;
                 entry.3 += 1;
                 entry.4 = model;
+                if tier == "light" { entry.5 += 1; } else { entry.6 += 1; }
             }
         }
 
@@ -518,23 +527,20 @@ async fn main() -> Result<()> {
         };
 
         println!("Token usage (estimated ~4 chars/token)\n");
-        println!("{:<20} {:>8} {:>8} {:>6} {:>8}  {}", "Worker", "Input", "Output", "Calls", "Time", "Model");
-        println!("{}", "─".repeat(65));
+        println!("{:<20} {:>8} {:>8} {:>6} {:>8}  {:<10} {}", "Worker", "Input", "Output", "Calls", "Time", "CLI", "Tiers");
+        println!("{}", "─".repeat(78));
 
         let mut workers: Vec<_> = per_worker.iter().collect();
         workers.sort_by(|a, b| (b.1.0 + b.1.1).cmp(&(a.1.0 + a.1.1)));
 
-        for (name, (inp, out, dur, calls, model)) in &workers {
-            println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {}", name, inp / 1000, out / 1000, calls, fmt_time(*dur), model);
+        for (name, (inp, out, dur, calls, model, light, full)) in &workers {
+            let tier_str = format!("{}F/{}L", full, light);
+            println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {}", name, inp / 1000, out / 1000, calls, fmt_time(*dur), model, tier_str);
         }
 
-        println!("{}", "─".repeat(65));
-        println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}", "TOTAL", total_input / 1000, total_output / 1000, total_calls, fmt_time(total_duration));
-
-        // Rough cost estimate (haiku)
-        let input_cost = (total_input as f64 / 1_000_000.0) * 0.25;
-        let output_cost = (total_output as f64 / 1_000_000.0) * 1.25;
-        println!("\nEstimated cost (haiku): ${:.4}", input_cost + output_cost);
+        println!("{}", "─".repeat(78));
+        let total_tier_str = format!("{}F/{}L", total_full, total_light);
+        println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {}", "TOTAL", total_input / 1000, total_output / 1000, total_calls, fmt_time(total_duration), "", total_tier_str);
 
         return Ok(());
     }
@@ -649,6 +655,19 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
     let manifest = lifecycle::read_manifest(&manifest_path)?;
 
     let pids_file = manifest_path.parent().unwrap().join("workers.pids");
+
+    // Clean up stale PIDs — remove entries for processes that are no longer alive
+    if pids_file.exists() {
+        let content = std::fs::read_to_string(&pids_file)?;
+        let state: std::collections::HashMap<String, lifecycle::WorkerState> =
+            serde_json::from_str(&content).unwrap_or_default();
+        for (name, ws) in &state {
+            if !lifecycle::process_exists(ws.pid) {
+                println!("⚠ Cleaning up stale PID for {} (PID {} no longer running)", name, ws.pid);
+                lifecycle::remove_worker_pid(&pids_file, name)?;
+            }
+        }
+    }
 
     // Determine which workers to start
     let workers = if targets[0] == "all" {

@@ -26,6 +26,9 @@ pub struct WorkerManifestEntry {
     /// CLI command template with {prompt}, {model}, {workdir} placeholders
     #[serde(default)]
     pub cli_template: Option<String>,
+    /// CLI command template for light-tier calls (e.g. plan mode) — falls back to cli_template
+    #[serde(default)]
+    pub cli_template_light: Option<String>,
     /// Pipeline: workers to auto-dispatch to when this worker completes a task
     #[serde(default)]
     pub hands_off_to: Vec<String>,
@@ -176,8 +179,8 @@ pub fn save_worker_pid(pids_file: &Path, name: &str, pid: u32, command: &str) ->
     Ok(())
 }
 
-/// SECURITY: Verify process still exists before killing
-fn process_exists(pid: u32) -> bool {
+/// Verify process still exists (signal 0 check)
+pub fn process_exists(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // POSIX: send signal 0 to check if process exists

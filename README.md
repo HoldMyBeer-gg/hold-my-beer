@@ -34,15 +34,19 @@ Create `workers.yaml` in your project:
 ```yaml
 server: http://localhost:8000
 cli_template: "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"
+cli_template_light: "claude -p {prompt} --model {model} --plan"  # optional — used for light-tier calls
 model: haiku              # optional — only needed if cli_template uses {model}
 workers:
   - name: frontend
     role: "Frontend development"
   - name: backend
     role: "Backend API development"
+    cli_template_light: "cursor -p {prompt} --plan"  # per-worker override
 ```
 
 The `cli_template` tells workers which AI CLI to invoke. Replace `claude` with your tool of choice (e.g., `cursor -p {prompt}`, `ollama run {model} {prompt}`). Placeholders: `{prompt}`, `{model}`, `{workdir}`. The `model` field is optional — only required if your `cli_template` uses `{model}`. If `cli_template` is omitted, `collab init` writes a `{agent}` placeholder that must be edited before workers can start.
+
+The `cli_template_light` is optional — used for light-tier calls (short messages, no pending tasks). This lets you run a cheaper/faster mode for simple exchanges (e.g. `--plan` mode) while reserving full agent mode for real work. If omitted, light-tier calls use the regular `cli_template`. Per-worker overrides work the same as `cli_template`.
 
 ```bash
 collab init workers.yaml
@@ -112,7 +116,17 @@ Estimated cost (haiku): $0.3976
 
 **9 workers, 629 invocations, 5 hours minutes of active work — $0.25 on Haiku.**
 
-Each invocation gets a fresh ~2K token prompt (identity, teammates, todos, message). No conversation history dragging along. State persists externally via files and the todo queue — not in the context window.
+Each invocation gets a fresh prompt (identity, teammates, todos, message). No conversation history dragging along. State persists externally via files and the todo queue — not in the context window.
+
+**Prompt tiering** automatically reduces token usage based on message complexity:
+
+| Tier | When | What happens |
+|------|------|-------------|
+| **Harness** | Pings, status checks | Instant reply from state file — no CLI spawn, zero tokens |
+| **Light** | Short messages, no pending todos | Compact prompt (~500 tokens) — role + message only |
+| **Full** | Complex tasks, pending todos, self-kicks | Full context (~2K tokens) — teammates, state, todos, schema |
+
+`collab usage` shows the tier breakdown per worker (e.g. `12F/5L` = 12 full, 5 light calls).
 
 | Model | Est. cost/hour (8 workers active) | Idle cost |
 |-------|-----------------------------------|-----------|

@@ -50,6 +50,7 @@ Create a `workers.yaml` file in your project:
 ```yaml
 server: http://localhost:8000
 cli_template: "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"
+cli_template_light: "claude -p {prompt} --model {model} --plan"  # optional — light-tier calls
 model: haiku              # optional — only needed if cli_template uses {model}
 workers:
   - name: frontend
@@ -59,6 +60,8 @@ workers:
 ```
 
 The `cli_template` field specifies which AI CLI tool to use. Replace `claude` with your tool of choice (e.g., `cursor -p {prompt}`, `ollama run {model} {prompt}`). Available placeholders: `{prompt}`, `{model}`, `{workdir}`. The `model` field is optional — only required if your `cli_template` uses `{model}`. If `cli_template` is omitted, `collab init` writes `{agent} -p {prompt} --model {model}` which must be edited before workers can start.
+
+The optional `cli_template_light` field specifies a cheaper/faster CLI mode for light-tier calls (short messages, no pending tasks). For example, `--plan` mode thinks but doesn't execute tools. If omitted, light-tier calls use the regular `cli_template`. Can be set per-worker or project-wide.
 
 Run initialization:
 

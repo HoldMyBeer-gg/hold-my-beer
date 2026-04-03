@@ -11,7 +11,31 @@ use tokio::time::{sleep, Duration, Instant};
 use crate::client::CollabClient;
 
 const TRIVIAL_REPLY_PATTERN: &str = r"(?i)^(acknowledged|got it|thanks|thank you|ok|okay|will do|on it|roger)$";
+const PING_PATTERN: &str = r"(?i)^(ping|status|are you there\??|health ?check|you up\??)$";
+/// Matches messages that are pure acknowledgments — no new information, just confirming receipt.
+/// These start with ack-like phrases and contain no task assignments or new requests.
+const ACK_START_PATTERN: &str = r"(?i)^(@[\w-]+\s+)*\s*(acknowledged|ack\b|aligned|standing by|same gate|holding|received|noted|roger|unchanged|freeze (holds|respected|unchanged)|gate freeze|doc freeze|standby)";
 pub const DEFAULT_CLI_TEMPLATE: &str = "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PromptTier {
+    /// Handled entirely by the harness — no CLI spawn
+    Harness,
+    /// Minimal prompt — role + message + compact schema
+    Light,
+    /// Full prompt — teammates, state, todos, full schema
+    Full,
+}
+
+impl std::fmt::Display for PromptTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PromptTier::Harness => write!(f, "harness"),
+            PromptTier::Light => write!(f, "light"),
+            PromptTier::Full => write!(f, "full"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -77,8 +101,10 @@ pub struct WorkerHarness {
     instance_id: String,
     workdir: PathBuf,
     model: String,
-    /// CLI command template with {prompt}, {model}, {workdir} placeholders
+    /// CLI command template for full-tier (agent mode) — {prompt}, {model}, {workdir} placeholders
     cli_template: String,
+    /// CLI command template for light-tier (plan/think mode) — if unset, falls back to cli_template
+    cli_template_light: Option<String>,
     auto_reply: bool,
     batch_wait_ms: u64,
     message_queue: Arc<Mutex<Vec<Message>>>,
@@ -96,6 +122,7 @@ impl WorkerHarness {
         workdir: PathBuf,
         model: String,
         cli_template: Option<String>,
+        cli_template_light: Option<String>,
         auto_reply: bool,
         batch_wait_ms: u64,
         hands_off_to: Vec<String>,
@@ -107,6 +134,7 @@ impl WorkerHarness {
             workdir,
             model,
             cli_template: cli_template.unwrap_or_else(|| DEFAULT_CLI_TEMPLATE.to_string()),
+            cli_template_light,
             auto_reply,
             batch_wait_ms,
             message_queue: Arc::new(Mutex::new(Vec::new())),
@@ -114,6 +142,83 @@ impl WorkerHarness {
             hands_off_to,
             teammates,
         }
+    }
+
+    /// Classify how much context a set of messages needs
+    async fn classify_tier(&self, messages: &[Message]) -> PromptTier {
+        // Ping/status checks → harness handles directly
+        let ping_re = Regex::new(PING_PATTERN).unwrap();
+        if messages.iter().all(|m| ping_re.is_match(m.content.trim())) {
+            return PromptTier::Harness;
+        }
+
+        // Ack loop detection — swallow pure acknowledgments from other workers.
+        // These are messages that start with ack-like phrases and carry no new information.
+        let ack_re = Regex::new(ACK_START_PATTERN).unwrap();
+        let non_self_msgs: Vec<_> = messages.iter().filter(|m| m.sender != self.instance_id).collect();
+        if !non_self_msgs.is_empty() && non_self_msgs.iter().all(|m| ack_re.is_match(m.content.trim())) {
+            // All external messages are acks — swallow them
+            return PromptTier::Harness;
+        }
+
+        // Self-kicks and boot messages always get full context
+        if messages.iter().any(|m| m.sender == self.instance_id) {
+            return PromptTier::Full;
+        }
+
+        // Multiple messages batched → full context
+        if messages.len() > 1 {
+            return PromptTier::Full;
+        }
+
+        // Single short message with no todos → light
+        if let Some(msg) = messages.first() {
+            if msg.content.len() < 200 {
+                return PromptTier::Light;
+            }
+        }
+
+        PromptTier::Full
+    }
+
+    /// Handle harness-tier messages without spawning CLI.
+    /// Pings get a status reply; acks get swallowed silently to break ack loops.
+    async fn handle_harness_tier(&self, messages: &[Message]) -> Result<()> {
+        let ping_re = Regex::new(PING_PATTERN).unwrap();
+        let is_ping = messages.iter().all(|m| ping_re.is_match(m.content.trim()));
+
+        if is_ping {
+            // Respond to pings with current status
+            let state = self.load_state();
+            let status = state.status.as_deref().unwrap_or("idle");
+            let files_count = state.files_touched.len();
+            let pending = state.pending.as_deref().unwrap_or("none");
+
+            let reply = format!(
+                "Online. Status: {}. Files touched: {}. Pending: {}",
+                status, files_count, pending
+            );
+
+            let mut replied = std::collections::HashSet::new();
+            for msg in messages {
+                if msg.sender != self.instance_id && replied.insert(msg.sender.clone()) {
+                    if let Err(e) = self.client.add_message(&msg.sender, &reply, None).await {
+                        self.log_error(&format!("Failed to reply to @{}: {}", msg.sender, e));
+                    }
+                }
+            }
+            self.log(&format!("harness-handled ping → {}", status));
+        } else {
+            // Ack messages — swallow silently to break ack loops
+            let senders: Vec<_> = messages.iter()
+                .filter(|m| m.sender != self.instance_id)
+                .map(|m| format!("@{}", m.sender))
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter().collect();
+            self.log(&format!("swallowed {} ack(s) from {} — no CLI spawn",
+                messages.len(), senders.join(", ")));
+        }
+        Ok(())
     }
 
     pub async fn run(&self) -> Result<()> {
@@ -129,6 +234,7 @@ impl WorkerHarness {
         let workdir = self.workdir.clone();
         let model = self.model.clone();
         let cli_template = self.cli_template.clone();
+        let cli_template_light = self.cli_template_light.clone();
         let auto_reply = self.auto_reply;
         let hands_off_to = self.hands_off_to.clone();
         let teammates = self.teammates.clone();
@@ -182,6 +288,7 @@ impl WorkerHarness {
                         workdir: workdir.clone(),
                         model: model.clone(),
                         cli_template: cli_template.clone(),
+                        cli_template_light: cli_template_light.clone(),
                         auto_reply,
                         batch_wait_ms,
                         message_queue: Arc::new(Mutex::new(Vec::new())),
@@ -189,17 +296,34 @@ impl WorkerHarness {
                         hands_off_to: hands_off_to.clone(),
                         teammates: teammates.clone(),
                     };
-                    if let Err(e) = harness.spawn_claude(&messages).await {
-                        harness.log_error(&format!("Failed to process {} messages: {}", messages.len(), e));
-                    }
+                    let tier = harness.classify_tier(&messages).await;
+                    let worker_continued = match tier {
+                        PromptTier::Harness => {
+                            if let Err(e) = harness.handle_harness_tier(&messages).await {
+                                harness.log_error(&format!("Harness tier failed: {}", e));
+                            }
+                            false
+                        }
+                        _ => {
+                            let full_context = tier == PromptTier::Full;
+                            match harness.spawn_cli(&messages, full_context).await {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    harness.log_error(&format!("Failed to process {} messages: {}", messages.len(), e));
+                                    false
+                                }
+                            }
+                        }
+                    };
                     // Update roster presence from worker state
                     let state = harness.load_state();
                     if let Some(status) = &state.status {
                         *batch_status.lock().await = status.clone();
                     }
 
-                    // #1: Auto-kick if worker has pending todos but didn't self-kick
-                    if !is_self_kick || consecutive_kicks <= 1 {
+                    // Auto-kick if worker has pending todos but didn't self-continue
+                    // Skip if worker already set continue: true (it self-kicked)
+                    if !worker_continued && (!is_self_kick || consecutive_kicks <= 1) {
                         if let Ok(todos) = harness.client.fetch_todos(&harness.instance_id).await {
                             if !todos.is_empty() {
                                 // Check if worker already self-kicked (message in queue)
@@ -208,7 +332,7 @@ impl WorkerHarness {
                                     drop(q);
                                     let _ = harness.client.add_message(
                                         &harness.instance_id,
-                                        &format!("You still have {} pending tasks. Keep working.", todos.len()),
+                                        &format!("You have {} pending tasks — pick up the next one when ready.", todos.len()),
                                         None
                                     ).await;
                                 }
@@ -249,7 +373,7 @@ impl WorkerHarness {
                     // Auto-kick: send boot message AFTER SSE is connected (only once)
                     if !booted {
                         booted = true;
-                        if let Err(e) = self.client.add_message(&self.instance_id, "Session start. You MUST check your pending tasks and start working on them immediately. Set continue:true in your output to keep working through your task list. Only set continue:false when you are genuinely blocked on someone else or have zero tasks left.", None).await {
+                        if let Err(e) = self.client.add_message(&self.instance_id, "Session start — welcome back. Check your pending tasks and pick up where you left off. Set continue:true to keep working through your task list, or continue:false when you're blocked or done.", None).await {
                             self.log_error(&format!("Failed to send boot message: {}", e));
                         }
                     }
@@ -313,13 +437,53 @@ impl WorkerHarness {
             .unwrap_or(false)
     }
 
-    async fn spawn_claude(&self, messages: &[Message]) -> Result<()> {
-        let start = std::time::Instant::now();
+    /// Build the prompt for a CLI invocation.
+    /// `full_context`: true = full prompt (teammates, state, todos, full schema), false = light prompt
+    async fn build_prompt(&self, messages: &[Message], full_context: bool) -> Result<String> {
+        // Format message lines (shared by both tiers)
+        let mut msg_lines = String::new();
+        for msg in messages {
+            let body = if msg.content.len() > 2000 {
+                let hash_short = &msg.hash[..7.min(msg.hash.len())];
+                let tmp_path = format!("/tmp/collab-msg-{}.md", hash_short);
+                let _ = std::fs::write(&tmp_path, &msg.content);
+                format!("(see file: {})", tmp_path)
+            } else {
+                msg.content.clone()
+            };
+            msg_lines.push_str(&format!("@{}: {}\n", msg.sender, body));
+        }
 
-        // Load previous state
+        if !full_context {
+            // Light prompt — minimal context
+            return Ok(format!(
+                "You are @{}. Role: {}
+
+Messages ({}):
+{}
+
+Act on the messages above. Use Bash/Read/Write/Edit to do your actual work.
+
+When done, your FINAL output must be ONLY a JSON object (no other text before or after):
+
+{{
+  \"response\": \"your reply to the sender (string or null)\",
+  \"continue\": false,
+  \"state_update\": {{\"status\": \"what you're doing now\"}}
+}}
+
+Do NOT run any collab CLI commands. Focus on your actual work.",
+                self.instance_id,
+                self.get_role(),
+                messages.len(),
+                msg_lines
+            ));
+        }
+
+        // Full prompt — complete context
         let state = self.load_state();
+        let state_str = serde_json::to_string_pretty(&state).unwrap_or_else(|_| "No previous state.".to_string());
 
-        // Fetch pending todos for this worker
         let todos_str = match self.client.fetch_todos(&self.instance_id).await {
             Ok(todos) if !todos.is_empty() => {
                 let mut lines = String::from("Pending tasks assigned to you:\n");
@@ -335,23 +499,6 @@ impl WorkerHarness {
             _ => "No pending tasks.".to_string(),
         };
 
-        // Build prompt
-        let mut msg_lines = String::new();
-        for msg in messages {
-            let body = if msg.content.len() > 2000 {
-                let hash_short = &msg.hash[..7.min(msg.hash.len())];
-                let tmp_path = format!("/tmp/collab-msg-{}.md", hash_short);
-                let _ = std::fs::write(&tmp_path, &msg.content);
-                format!("(see file: {})", tmp_path)
-            } else {
-                msg.content.clone()
-            };
-            msg_lines.push_str(&format!("@{}: {}\n", msg.sender, body));
-        }
-
-        let state_str = serde_json::to_string_pretty(&state).unwrap_or_else(|_| "No previous state.".to_string());
-
-        // Build teammates section
         let teammates_str = if self.teammates.is_empty() {
             "No teammates configured.".to_string()
         } else {
@@ -368,7 +515,7 @@ impl WorkerHarness {
             lines
         };
 
-        let prompt = format!(
+        Ok(format!(
             "You are @{}. Role: {}
 
 {}
@@ -410,10 +557,25 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
             todos_str,
             messages.len(),
             msg_lines
-        );
+        ))
+    }
+
+    /// Returns Ok(true) if the worker set continue: true, Ok(false) otherwise.
+    async fn spawn_cli(&self, messages: &[Message], full_context: bool) -> Result<bool> {
+        let start = std::time::Instant::now();
+        let tier = if full_context { PromptTier::Full } else { PromptTier::Light };
+
+        let prompt = self.build_prompt(messages, full_context).await?;
+
+        // Select template: light tier uses cli_template_light if available
+        let active_template = if !full_context {
+            self.cli_template_light.as_deref().unwrap_or(&self.cli_template)
+        } else {
+            &self.cli_template
+        };
 
         // Validate: error if template uses {model} but no model is set
-        if self.cli_template.contains("{model}") && self.model.is_empty() {
+        if active_template.contains("{model}") && self.model.is_empty() {
             return Err(anyhow::anyhow!(
                 "cli_template uses {{model}} but no model is configured.\n\
                  Set 'model' in workers.yaml or pass --model to collab worker."
@@ -421,7 +583,7 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
         }
 
         // Validate: catch unconfigured placeholder from collab init
-        if self.cli_template.contains("{agent}") {
+        if active_template.contains("{agent}") {
             return Err(anyhow::anyhow!(
                 "cli_template still contains {{agent}} placeholder — you need to configure it.\n\
                  Edit .collab/workers.json or workers.yaml and replace {{agent}} with your CLI tool.\n\
@@ -433,8 +595,8 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
         }
 
         // Shell-split the template BEFORE substitution so {prompt} stays as one arg
-        let template_parts = shlex::split(&self.cli_template).ok_or_else(|| {
-            anyhow::anyhow!("Invalid cli_template (bad quoting): {}", self.cli_template)
+        let template_parts = shlex::split(active_template).ok_or_else(|| {
+            anyhow::anyhow!("Invalid cli_template (bad quoting): {}", active_template)
         })?;
         if template_parts.is_empty() {
             return Err(anyhow::anyhow!("cli_template expanded to empty command"));
@@ -489,6 +651,7 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
         let duration = start.elapsed().as_secs();
 
         // Parse structured output
+        let mut did_continue = false;
         if let Some(collab_output) = self.parse_collab_output(&stdout) {
             // Send response once per unique sender (skip self)
             let mut replied: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -555,6 +718,7 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
             }
 
             // Self-kick: worker wants to keep going
+            did_continue = collab_output.r#continue;
             if collab_output.r#continue {
                 let kick_msg = collab_output.response.as_deref().unwrap_or("Continuing...");
                 let self_msg = format!("(self-continue) Previous output: {}", kick_msg);
@@ -596,19 +760,32 @@ Do NOT run any collab CLI commands. The harness handles all messaging and task d
         self.log(&format!("done — {}s, ~{}+{} tokens", duration, est_input_tokens, est_output_tokens));
 
         // Append to usage log
-        let log_line = format!("{}\t{}\t{}\t{}\t{}\t{}\n",
+        let log_line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
             self.instance_id,
             duration,
             est_input_tokens,
             est_output_tokens,
-            self.model
+            self.cli_template.split_whitespace().next().unwrap_or("unknown"),
+            tier
         );
         let log_path = self.workdir.join("../../.collab/usage.log");
         let _ = std::fs::OpenOptions::new().create(true).append(true).open(&log_path)
             .and_then(|mut f| std::io::Write::write_all(&mut f, log_line.as_bytes()));
 
-        Ok(())
+        // Clean up temp files from this invocation
+        for msg in messages {
+            if msg.content.len() > 2000 {
+                let hash_short = &msg.hash[..7.min(msg.hash.len())];
+                let tmp_path = format!("/tmp/collab-msg-{}.md", hash_short);
+                let _ = std::fs::remove_file(&tmp_path);
+            }
+        }
+        // Remove debug dump from previous failure (if this call succeeded)
+        let debug_path = format!("/tmp/collab-debug-{}.txt", self.instance_id);
+        let _ = std::fs::remove_file(&debug_path);
+
+        Ok(did_continue)
     }
 
     fn parse_collab_output(&self, output: &str) -> Option<CollabOutput> {
@@ -832,5 +1009,39 @@ mod tests {
         let input = r#"{"response": "ok", "unknown_field": 42, "another": "value", "continue": false}"#;
         let result = parse_collab_output(input).expect("should parse");
         assert_eq!(result.response.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn ack_pattern_matches_acknowledged() {
+        let re = Regex::new(ACK_START_PATTERN).unwrap();
+        assert!(re.is_match("Acknowledged — gate freeze holds"));
+        assert!(re.is_match("Ack — freeze unchanged"));
+        assert!(re.is_match("Aligned on gate freeze"));
+        assert!(re.is_match("Standing by for joint build"));
+        assert!(re.is_match("Same gate on my side"));
+        assert!(re.is_match("Holding research/dataset churn per gate"));
+        assert!(re.is_match("Received — holding Option A"));
+        assert!(re.is_match("Noted; unchanged until PM records"));
+        assert!(re.is_match("Gate freeze respected — no validator-driven spec churn"));
+        assert!(re.is_match("Freeze holds — standing by"));
+    }
+
+    #[test]
+    fn ack_pattern_matches_with_at_mentions() {
+        let re = Regex::new(ACK_START_PATTERN).unwrap();
+        assert!(re.is_match("@researcher Acknowledged — holding"));
+        assert!(re.is_match("@project-manager @validator Acknowledged freeze"));
+        assert!(re.is_match("@database Aligned: holding research churn"));
+    }
+
+    #[test]
+    fn ack_pattern_does_not_match_real_messages() {
+        let re = Regex::new(ACK_START_PATTERN).unwrap();
+        assert!(!re.is_match("Fixed the auth redirect issue"));
+        assert!(!re.is_match("New dataset ready for integration"));
+        assert!(!re.is_match("Found bug in payment processor"));
+        assert!(!re.is_match("Please review the schema changes"));
+        assert!(!re.is_match("Write access is unblocked on my side"));
+        assert!(!re.is_match("Completed work from @builder: API ready"));
     }
 }
