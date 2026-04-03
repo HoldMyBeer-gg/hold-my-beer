@@ -527,20 +527,37 @@ async fn main() -> Result<()> {
         };
 
         println!("Token usage (estimated ~4 chars/token)\n");
-        println!("{:<20} {:>8} {:>8} {:>6} {:>8}  {:<10} {}", "Worker", "Input", "Output", "Calls", "Time", "CLI", "Tiers");
-        println!("{}", "─".repeat(78));
+
+        // Fetch todo counts per worker from server
+        let client = CollabClient::new(&server, "", token.as_deref());
+        let mut todo_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for worker_name in per_worker.keys() {
+            if let Ok(todos) = client.fetch_todos(worker_name).await {
+                todo_counts.insert(worker_name.clone(), todos.len());
+            }
+        }
+        let total_todos: usize = todo_counts.values().sum();
 
         let mut workers: Vec<_> = per_worker.iter().collect();
         workers.sort_by(|a, b| (b.1.0 + b.1.1).cmp(&(a.1.0 + a.1.1)));
 
+        println!("{:<20} {:>8} {:>8} {:>6} {:>8}  {:<10} {:<10} {}", "Worker", "Input", "Output", "Calls", "Time", "CLI", "Tiers", "Todos");
+        println!("{}", "─".repeat(88));
+
         for (name, (inp, out, dur, calls, model, light, full)) in &workers {
             let tier_str = format!("{}F/{}L", full, light);
-            println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {}", name, inp / 1000, out / 1000, calls, fmt_time(*dur), model, tier_str);
+            let todo_str = match todo_counts.get(*name) {
+                Some(0) => "—".to_string(),
+                Some(n) => format!("{}", n),
+                None => "?".to_string(),
+            };
+            println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {}", name, inp / 1000, out / 1000, calls, fmt_time(*dur), model, tier_str, todo_str);
         }
 
-        println!("{}", "─".repeat(78));
+        println!("{}", "─".repeat(88));
         let total_tier_str = format!("{}F/{}L", total_full, total_light);
-        println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {}", "TOTAL", total_input / 1000, total_output / 1000, total_calls, fmt_time(total_duration), "", total_tier_str);
+        let total_todo_str = if total_todos > 0 { format!("{}", total_todos) } else { "—".to_string() };
+        println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {}", "TOTAL", total_input / 1000, total_output / 1000, total_calls, fmt_time(total_duration), "", total_tier_str, total_todo_str);
 
         return Ok(());
     }
