@@ -645,8 +645,8 @@ When done, your FINAL output must be ONLY a JSON object (no other text before or
 
 Fields:
 - response: reply back to whoever messaged you
-- delegate: assign tasks to teammates — creates a todo and pings them (optional)
-- messages: send messages to any teammate directly (optional)
+- delegate: assign tasks to teammates — creates a persistent todo and pings them. IMPORTANT: if you want a teammate to do something, you MUST use delegate — do NOT put task assignments in response or messages, those are ephemeral and will be lost on context reset
+- messages: send messages to any teammate directly — for status updates and context only, NOT for assigning work (optional)
 - completed_tasks: task hashes you finished — marks done and routes to downstream workers (optional)
 - continue: true to keep working autonomously, false when blocked or done
 - state_update: persist state for next invocation. Include \"status\" to update your roster presence

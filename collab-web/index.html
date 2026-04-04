@@ -970,6 +970,7 @@ const S = {
   colorIdx:    0,
   timers:      [],
   seenIds:     new Set(),
+  knownWorkerIds: new Set(),
   inboxMode:   false,
   tabMode:     'messages', // 'messages' | 'todos'
   todos:       {},   // instance_id → Todo[]
@@ -1929,7 +1930,8 @@ async function loadTodos(id) {
 async function pollTodos() {
   if (!S.workers.length) return;
   await Promise.allSettled(S.workers.map(w => loadTodos(w.instance_id)));
-  document.getElementById('todo-to-list').innerHTML = S.workers.map(w => `<option value="${esc(w.instance_id)}">`).join('');
+  S.workers.forEach(w => S.knownWorkerIds.add(w.instance_id));
+  document.getElementById('todo-to-list').innerHTML = [...S.knownWorkerIds].sort().map(id => `<option value="${esc(id)}">`).join('');
   const total = Object.values(S.todos).reduce((n, arr) => n + arr.length, 0);
   // Hide badge when viewing tasks tab
   document.getElementById('tasks-badge').textContent = (S.tabMode === 'todos') ? '' : (total || '');
@@ -1972,17 +1974,17 @@ document.getElementById('todos-panel').addEventListener('click', async e => {
   const hash = row?.dataset.hash;
   const instance = row?.dataset.instance;
   if (!hash || !instance) return;
+  if (row.dataset.completing) return;
+  row.dataset.completing = '1';
+  row.style.animation = 'todo-done .2s ease-out forwards';
+  S.todos[instance] = (S.todos[instance] || []).filter(t => t.hash !== hash);
+  const total = Object.values(S.todos).reduce((n, arr) => n + arr.length, 0);
+  document.getElementById('tasks-badge').textContent = total || '';
+  setTimeout(() => renderTodos(), 220);
   try {
     await api(`/todos/${hash.slice(0,7)}/done`, { method: 'PATCH' });
-    row.style.animation = 'todo-done .2s ease-out forwards';
-    setTimeout(() => {
-      S.todos[instance] = (S.todos[instance] || []).filter(t => t.hash !== hash);
-      const total = Object.values(S.todos).reduce((n, arr) => n + arr.length, 0);
-      document.getElementById('tasks-badge').textContent = total || '';
-      renderTodos();
-    }, 220);
   } catch (err) {
-    announce(err.message?.includes('409') ? 'Already marked done' : 'Failed to complete task');
+    if (!err.message?.includes('409')) announce('Failed to complete task');
   }
 });
 
