@@ -23,6 +23,9 @@ pub struct WorkerManifestEntry {
     pub codebase_path: String,
     pub model: String,
     pub output_dir: String,
+    /// Shared data root — falls back to output_dir parent if None
+    #[serde(default)]
+    pub shared_data_dir: Option<String>,
     /// CLI command template with {prompt}, {model}, {workdir} placeholders
     #[serde(default)]
     pub cli_template: Option<String>,
@@ -195,7 +198,30 @@ pub fn process_exists(pid: u32) -> bool {
     }
 }
 
-/// SECURITY: Kill process with verification
+/// Check if any process in the process group (pgid == pid) still exists
+#[cfg(unix)]
+fn process_group_exists(pgid: u32) -> bool {
+    // List all PIDs and check if any belong to this process group
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        // /proc not available (macOS) — fall back to checking pgid via kill(0)
+        return unsafe { libc::killpg(pgid as i32, 0) == 0 };
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let s = name.to_string_lossy();
+        if s.chars().all(|c| c.is_ascii_digit()) {
+            let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
+            // stat format: pid (name) state ppid pgrp ...
+            let fields: Vec<&str> = stat.split_whitespace().collect();
+            if fields.get(4).map(|g| *g == pgid.to_string()).unwrap_or(false) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// SECURITY: Kill process group with verification — waits until all children are dead
 pub fn kill_process(pid: u32, name: &str) -> Result<()> {
     if !process_exists(pid) {
         println!("⚠ Process {} (PID {}) not found", name, pid);
@@ -205,15 +231,22 @@ pub fn kill_process(pid: u32, name: &str) -> Result<()> {
     #[cfg(unix)]
     {
         unsafe {
-            // Kill the process group (negative PID) to get worker + child claude processes
-            libc::kill(-(pid as i32), libc::SIGTERM);
+            // SIGTERM the entire process group (collab worker + any spawned claude children)
+            libc::killpg(pid as i32, libc::SIGTERM);
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
 
-        // Check if still running
-        if process_exists(pid) {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGKILL);
+        // Wait up to 3s for the entire process group to exit
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if !process_group_exists(pid) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                // Force kill anything still alive in the group
+                unsafe { libc::killpg(pid as i32, libc::SIGKILL); }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                break;
             }
         }
     }

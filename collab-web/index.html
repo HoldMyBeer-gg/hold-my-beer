@@ -246,6 +246,38 @@
     .compose-send:disabled { opacity: .3; pointer-events: none; }
     .compose-send svg { width: 13px; height: 13px; }
 
+    /* ─── Todo compose bar ───────────────────────────────────────────────── */
+    .todo-compose {
+      flex-shrink: 0; padding: 10px 18px 14px;
+      border-top: 1px solid var(--border);
+      display: flex; gap: 8px; align-items: center;
+    }
+    #todo-to-wrap {
+      display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      padding: 0 10px; height: 36px;
+      transition: border-color var(--t);
+    }
+    #todo-to-wrap:focus-within { border-color: var(--bhi); }
+    #todo-to-wrap .compose-as { font-size: 12px; }
+    #todo-to {
+      background: none; border: none; outline: none; width: 90px;
+      font-size: 15px; font-weight: 600; color: var(--text);
+    }
+    #todo-to::placeholder { color: var(--dim); }
+    #todo-desc-wrap {
+      flex: 1; display: flex; align-items: center; gap: 6px;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+      padding: 0 6px 0 12px; min-height: 36px;
+      transition: border-color var(--t);
+    }
+    #todo-desc-wrap:focus-within { border-color: var(--bhi); }
+    #todo-desc {
+      flex: 1; background: none; border: none; outline: none;
+      font-size: 15px; color: var(--text); font-family: inherit;
+    }
+    #todo-desc::placeholder { color: var(--dim); }
+
     /* ─── Mention & slash autocomplete ─────────────────────────────────────── */
     .compose-bar { position: relative; }
     #mention-list, #slash-list {
@@ -471,6 +503,21 @@
     </div>
     <div class="feed" id="feed" role="log" aria-live="polite" aria-label="Message feed"></div>
     <div id="todos-panel" role="region" aria-label="Task queue" hidden></div>
+    <div class="todo-compose" id="todo-compose" role="form" aria-label="Add a task" hidden>
+      <div id="todo-to-wrap">
+        <span class="compose-as">to</span>
+        <input id="todo-to" placeholder="worker" maxlength="32" autocomplete="off" spellcheck="false" aria-label="Assign to worker" list="todo-to-list">
+        <datalist id="todo-to-list"></datalist>
+      </div>
+      <div id="todo-desc-wrap">
+        <input id="todo-desc" placeholder="Task description…" maxlength="500" autocomplete="off" spellcheck="false" aria-label="Task description">
+        <button class="compose-send" id="todo-send" aria-label="Add task">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
+      </div>
+    </div>
     <div class="feed-empty" id="feed-empty">
       <span class="feed-empty-icon" aria-hidden="true">📭</span>
       <span>Waiting for messages…</span>
@@ -1882,6 +1929,7 @@ async function loadTodos(id) {
 async function pollTodos() {
   if (!S.workers.length) return;
   await Promise.allSettled(S.workers.map(w => loadTodos(w.instance_id)));
+  document.getElementById('todo-to-list').innerHTML = S.workers.map(w => `<option value="${esc(w.instance_id)}">`).join('');
   const total = Object.values(S.todos).reduce((n, arr) => n + arr.length, 0);
   // Hide badge when viewing tasks tab
   document.getElementById('tasks-badge').textContent = (S.tabMode === 'todos') ? '' : (total || '');
@@ -1961,6 +2009,7 @@ function switchTab(mode) {
   document.getElementById('feed').hidden        = toTodos;
   document.getElementById('feed-empty').hidden  = toTodos;
   document.getElementById('todos-panel').hidden = !toTodos;
+  document.getElementById('todo-compose').hidden = !toTodos;
   document.querySelector('.compose-bar').hidden = toTodos;
 
   if (!toTodos) {
@@ -1973,6 +2022,26 @@ function switchTab(mode) {
 document.getElementById('tab-all').addEventListener('click', () => switchTab('all'));
 document.getElementById('tab-mentions').addEventListener('click', () => switchTab('mentions'));
 document.getElementById('tab-tasks').addEventListener('click', () => switchTab('todos'));
+
+// ── Add todo ───────────────────────────────────────────────────────────────────
+async function submitTodo() {
+  const to   = document.getElementById('todo-to').value.trim().replace(/^@/, '');
+  const desc = document.getElementById('todo-desc').value.trim();
+  const from = document.getElementById('compose-name').value.trim() || 'human';
+  if (!to || !desc) return;
+  const btn = document.getElementById('todo-send');
+  btn.disabled = true;
+  try {
+    await api('/todos', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ assigned_by: from, instance: to, description: desc }) });
+    document.getElementById('todo-desc').value = '';
+    await pollTodos();
+  } catch (e) { console.error('[addTodo]', e); }
+  btn.disabled = false;
+}
+
+document.getElementById('todo-send').addEventListener('click', submitTodo);
+document.getElementById('todo-desc').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitTodo(); } });
+
 
 // Re-compute inbox count when your name changes
 document.getElementById('compose-name').addEventListener('input', () => renderFeed());

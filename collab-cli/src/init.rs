@@ -7,10 +7,15 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, MetadataExt as _};
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     #[serde(default = "default_server")]
     pub server: String,
     pub output_dir: Option<String>,
+    /// Shared data root for cross-worker file exchange (SMB/NFS/Tailscale etc.).
+    /// Falls back to output_dir if unset or unreachable.
+    /// Structure mirrors output_dir: shared_data_dir/<worker-name>/
+    pub shared_data_dir: Option<String>,
     /// Path to the shared codebase that workers will exec from (e.g., ~/code/claude-ipc)
     pub codebase_path: Option<String>,
     /// Default model for all workers — only needed if cli_template uses {model}
@@ -50,7 +55,7 @@ pub struct WorkerConfig {
 
 impl ProjectConfig {
     pub fn new(server: String, output_dir: Option<String>, codebase_path: Option<String>, model: Option<String>, workers: Vec<WorkerConfig>) -> Self {
-        Self { server, output_dir, codebase_path, model, cli_template: None, cli_template_light: None, workers }
+        Self { server, output_dir, shared_data_dir: None, codebase_path, model, cli_template: None, cli_template_light: None, workers }
     }
 }
 
@@ -82,7 +87,7 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
             .or(config.model.as_ref())
             .cloned()
             .unwrap_or_default();
-        let md = render_claude_md(worker, &config.workers, &config.server, &config.codebase_path, &worker_model);
+        let md = render_claude_md(worker, &config.workers, &config.server, &config.codebase_path, &worker_model, &config.shared_data_dir, &base_str);
         let path = dir.join("AGENT.md");
         std::fs::write(&path, md)?;
         println!("  ✓  {}", path.display());
@@ -91,7 +96,7 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
     // Write worker manifest to .collab/workers.json in the PROJECT ROOT, not output_dir
     // This allows 'collab start all' to find it regardless of output_dir location
     let project_root = Path::new(".");
-    write_worker_manifest(project_root, base, config)?;
+    write_worker_manifest(project_root, base, &base_str, config)?;
 
     // Write dashboard-config.json for avatar/color presets
     let mut entries = Vec::new();
@@ -118,7 +123,7 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
     Ok(())
 }
 
-fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, codebase_path: &Option<String>, model: &str) -> String {
+fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, codebase_path: &Option<String>, model: &str, shared_data_dir: &Option<String>, output_dir: &str) -> String {
     let teammates: Vec<&WorkerConfig> = all.iter().filter(|w| w.name != worker.name).collect();
 
     let team_table = if teammates.is_empty() {
@@ -145,25 +150,31 @@ fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, c
 
     let tasks_section = match &worker.tasks {
         Some(t) => {
-            // Reflow: join lines within a paragraph (single newline → space),
-            // preserve blank lines as paragraph breaks.
-            let reflowed = t
-                .trim()
-                .split("\n\n")
-                .map(|para| {
-                    para.lines()
-                        .map(|l| l.trim())
-                        .filter(|l| !l.is_empty())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .filter(|p| !p.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            format!("## Your Tasks\n\n{}\n\n", reflowed)
+            format!("## Your Tasks\n\n{}\n\n", t.trim())
         }
         None => String::new(),
     };
+
+    // Resolve shared data root: shared_data_dir if set, else output_dir
+    let data_root = shared_data_dir.as_deref().unwrap_or(output_dir);
+    let sibling_dirs: String = all.iter()
+        .filter(|w| w.name != worker.name)
+        .map(|w| format!("  {}/{}/", data_root, w.name))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let data_section = format!(
+        "## Data\n\n\
+        **Check the filesystem before asking a teammate.** Large data lives on disk — \
+        messages are for coordination only (\"I finished X\", \"blocked on Y\").\n\n\
+        Your output directory: `{data_root}/{name}/`\n\n\
+        Sibling worker data:\n{siblings}\n\n\
+        If `shared_data_dir` is unreachable (e.g. network share down), fall back to \
+        reading from sibling directories under `{output_dir}/`.\n\n",
+        data_root = data_root,
+        name = worker.name,
+        siblings = if sibling_dirs.is_empty() { "  _(no other workers)_".to_string() } else { sibling_dirs },
+        output_dir = output_dir,
+    );
 
     let workdir_cmd = codebase_path
         .as_ref()
@@ -280,7 +291,7 @@ collab todo add @{other} "implement the /api/users endpoint"
 collab add @{other} "Added a todo for you — see collab todo list for details"
 ```
 
-## Rules
+{data_section}## Rules
 
 Follow these without exception:
 
@@ -317,13 +328,14 @@ Follow these without exception:
         other = other,
         tasks_section = tasks_section,
         workdir_cmd = workdir_cmd,
+        data_section = data_section,
     )
 }
 
 use crate::lifecycle::WorkerManifestEntry;
 
 /// Write .collab/workers.json manifest for lifecycle management
-fn write_worker_manifest(project_root: &Path, output_dir: &Path, config: &ProjectConfig) -> Result<()> {
+fn write_worker_manifest(project_root: &Path, output_dir: &Path, output_dir_str: &str, config: &ProjectConfig) -> Result<()> {
     let collab_dir = project_root.join(".collab");
     fs::create_dir_all(&collab_dir)?;
 
@@ -363,6 +375,8 @@ fn write_worker_manifest(project_root: &Path, output_dir: &Path, config: &Projec
                     .to_string_lossy().to_string()
             },
             hands_off_to: worker.hands_off_to.clone(),
+            shared_data_dir: config.shared_data_dir.clone()
+                .or_else(|| Some(output_dir_str.to_string())),
         });
     }
 

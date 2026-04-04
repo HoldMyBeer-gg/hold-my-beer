@@ -161,11 +161,10 @@ impl WorkerHarness {
             return PromptTier::Harness;
         }
 
-        // Self-messages: boot and continue get Full (worker needs context to keep working);
-        // auto-kick reminders ("pending tasks") get Light (just a nudge)
+        // Self-messages always need full context — the worker must see its todo list
+        // to act on tasks. Light tier omits todos, making these calls useless.
         if messages.iter().any(|m| m.sender == self.instance_id) {
-            let is_auto_kick = messages.iter().all(|m| m.sender != self.instance_id || m.content.contains("pending tasks"));
-            return if is_auto_kick { PromptTier::Light } else { PromptTier::Full };
+            return PromptTier::Full;
         }
 
         // Multiple messages batched → full context
@@ -173,7 +172,7 @@ impl WorkerHarness {
             return PromptTier::Full;
         }
 
-        // Single short message with no todos → light
+        // Single short external message with no todos → light
         if let Some(msg) = messages.first() {
             if msg.content.len() < 200 {
                 return PromptTier::Light;
@@ -244,10 +243,43 @@ impl WorkerHarness {
 
         let max_self_kicks: u32 = 3;
 
-        tokio::spawn(async move {
-            let mut consecutive_kicks: u32 = 0;
+        // Serializes CLI invocations — only one claude process at a time per worker,
+        // but the batch loop itself is never blocked waiting for claude to finish.
+        let cli_lock: Arc<tokio::sync::Mutex<()>> = Arc::new(tokio::sync::Mutex::new(()));
 
+        // Watchdog: restart batch processor if it ever panics or exits unexpectedly
+        let watchdog_queue = queue.clone();
+        let watchdog_first_time = first_time.clone();
+        let watchdog_client = client.clone();
+        let watchdog_instance_id = instance_id.clone();
+        let watchdog_workdir = workdir.clone();
+        let watchdog_model = model.clone();
+        let watchdog_cli_template = cli_template.clone();
+        let watchdog_cli_template_light = cli_template_light.clone();
+        let watchdog_hands_off_to = hands_off_to.clone();
+        let watchdog_teammates = teammates.clone();
+        let watchdog_batch_status = current_status.clone();
+        let watchdog_cli_lock = cli_lock.clone();
+
+        tokio::spawn(async move {
             loop {
+                let handle = {
+                    let queue = watchdog_queue.clone();
+                    let first_time = watchdog_first_time.clone();
+                    let client = watchdog_client.clone();
+                    let instance_id = watchdog_instance_id.clone();
+                    let workdir = watchdog_workdir.clone();
+                    let model = watchdog_model.clone();
+                    let cli_template = watchdog_cli_template.clone();
+                    let cli_template_light = watchdog_cli_template_light.clone();
+                    let hands_off_to = watchdog_hands_off_to.clone();
+                    let teammates = watchdog_teammates.clone();
+                    let batch_status = watchdog_batch_status.clone();
+                    let cli_lock = watchdog_cli_lock.clone();
+
+                    tokio::spawn(async move {
+                        let mut consecutive_kicks: u32 = 0;
+                        loop {
                 sleep(Duration::from_millis(batch_wait_ms)).await;
 
                 // Check if queue has messages and batch window has passed
@@ -262,93 +294,128 @@ impl WorkerHarness {
                     }
                 };
 
-                if should_process {
-                    let mut messages = {
-                        let mut q = queue.lock().await;
-                        std::mem::take(&mut *q)
-                    };
-                    *first_time.lock().await = None;
+                if !should_process {
+                    continue;
+                }
 
-                    // Check if this is a self-kick (message from self)
-                    let has_external = messages.iter().any(|m| m.sender != instance_id);
-                    let is_self_kick = !has_external;
-                    if is_self_kick {
-                        consecutive_kicks += 1;
-                        if consecutive_kicks > max_self_kicks {
-                            eprintln!("[{}] self-kick cap reached ({}) — pausing until external message",
-                                Utc::now().format("%H:%M:%S UTC"), max_self_kicks);
-                            consecutive_kicks = 0;
-                            continue;
-                        }
-                    } else {
+                let mut messages = {
+                    let mut q = queue.lock().await;
+                    std::mem::take(&mut *q)
+                };
+                *first_time.lock().await = None;
+
+                // Check if this is a self-kick (message from self)
+                let has_external = messages.iter().any(|m| m.sender != instance_id);
+                let is_self_kick = !has_external;
+                if is_self_kick {
+                    consecutive_kicks += 1;
+                    if consecutive_kicks > max_self_kicks {
+                        eprintln!("[{}] self-kick cap reached ({}) — pausing until external message",
+                            Utc::now().format("%H:%M:%S UTC"), max_self_kicks);
                         consecutive_kicks = 0;
-                        // Strip self-kicks from mixed batches — only process external messages
-                        messages.retain(|m| m.sender != instance_id);
+                        continue;
                     }
+                } else {
+                    consecutive_kicks = 0;
+                    // Strip self-kicks from mixed batches — only process external messages
+                    messages.retain(|m| m.sender != instance_id);
+                }
 
-                    // Process messages
-                    let harness = WorkerHarness {
-                        client: client.clone(),
-                        instance_id: instance_id.clone(),
-                        workdir: workdir.clone(),
-                        model: model.clone(),
-                        cli_template: cli_template.clone(),
-                        cli_template_light: cli_template_light.clone(),
-                        auto_reply,
-                        batch_wait_ms,
-                        message_queue: Arc::new(Mutex::new(Vec::new())),
-                        first_message_time: Arc::new(Mutex::new(None)),
-                        hands_off_to: hands_off_to.clone(),
-                        teammates: teammates.clone(),
-                    };
-                    let tier = harness.classify_tier(&messages).await;
-                    let worker_continued = match tier {
-                        PromptTier::Harness => {
-                            if let Err(e) = harness.handle_harness_tier(&messages).await {
-                                harness.log_error(&format!("Harness tier failed: {}", e));
-                            }
-                            false
+                let harness = WorkerHarness {
+                    client: client.clone(),
+                    instance_id: instance_id.clone(),
+                    workdir: workdir.clone(),
+                    model: model.clone(),
+                    cli_template: cli_template.clone(),
+                    cli_template_light: cli_template_light.clone(),
+                    auto_reply,
+                    batch_wait_ms,
+                    message_queue: Arc::new(Mutex::new(Vec::new())),
+                    first_message_time: Arc::new(Mutex::new(None)),
+                    hands_off_to: hands_off_to.clone(),
+                    teammates: teammates.clone(),
+                };
+
+                let tier = harness.classify_tier(&messages).await;
+
+                match tier {
+                    PromptTier::Harness => {
+                        // Harness-tier is instant — handle inline, no lock needed
+                        if let Err(e) = harness.handle_harness_tier(&messages).await {
+                            harness.log_error(&format!("Harness tier failed: {}", e));
                         }
-                        _ => {
-                            let full_context = tier == PromptTier::Full;
-                            match harness.spawn_cli(&messages, full_context).await {
+                    }
+                    _ => {
+                        // Spawn CLI in a background task so the batch loop stays unblocked.
+                        // cli_lock serializes invocations — only one claude process at a time.
+                        let cli_lock = cli_lock.clone();
+                        let batch_status = batch_status.clone();
+                        let queue = queue.clone();
+                        let full_context = tier == PromptTier::Full;
+                        let instance_id_for_log = instance_id.clone();
+
+                        let handle = tokio::spawn(async move {
+                            let _guard = cli_lock.lock().await;
+
+                            let worker_continued = match harness.spawn_cli(&messages, full_context).await {
                                 Ok(c) => c,
                                 Err(e) => {
                                     harness.log_error(&format!("Failed to process {} messages: {}", messages.len(), e));
                                     false
                                 }
-                            }
-                        }
-                    };
-                    // Update roster presence from worker state
-                    let state = harness.load_state();
-                    if let Some(status) = &state.status {
-                        *batch_status.lock().await = status.clone();
-                    }
+                            };
 
-                    // Auto-kick if worker has pending todos but didn't self-continue.
-                    // Skip if this was an auto-kick (avoid kick→kick→kick loops),
-                    // but allow after a self-continue that finished (worker said continue:false).
-                    let was_auto_kick = is_self_kick && messages.iter().any(|m| m.content.contains("pending tasks"));
-                    if !worker_continued && !was_auto_kick {
-                        if let Ok(todos) = harness.client.fetch_todos(&harness.instance_id).await {
-                            if !todos.is_empty() {
-                                // Check if worker already self-kicked (message in queue)
-                                let q = queue.lock().await;
-                                if q.is_empty() {
-                                    drop(q);
-                                    let _ = harness.client.add_message(
-                                        &harness.instance_id,
-                                        &format!("You have {} pending tasks — pick up the next one when ready.", todos.len()),
-                                        None
-                                    ).await;
+                            // Update roster presence from worker state
+                            let state = harness.load_state();
+                            if let Some(status) = &state.status {
+                                *batch_status.lock().await = status.clone();
+                            }
+
+                            // Auto-kick if worker has pending todos but didn't self-continue.
+                            // Skip if this was an auto-kick (avoid kick→kick→kick loops).
+                            let was_auto_kick = is_self_kick && messages.iter().any(|m| m.content.contains("pending tasks"));
+                            if !worker_continued && !was_auto_kick {
+                                if let Ok(todos) = harness.client.fetch_todos(&harness.instance_id).await {
+                                    if !todos.is_empty() {
+                                        let q = queue.lock().await;
+                                        if q.is_empty() {
+                                            drop(q);
+                                            let _ = harness.client.add_message(
+                                                &harness.instance_id,
+                                                &format!("You have {} pending tasks — pick up the next one when ready.", todos.len()),
+                                                None
+                                            ).await;
+                                        }
+                                    }
                                 }
                             }
-                        }
+                        });
+
+                        // Monitor for panics — log them so they're not silently swallowed
+                        tokio::spawn(async move {
+                            if let Err(e) = handle.await {
+                                if e.is_panic() {
+                                    eprintln!("[{}] [{}] CLI task panicked — cli_lock released, batch loop continues",
+                                        Utc::now().format("%H:%M:%S UTC"), instance_id_for_log);
+                                }
+                            }
+                        });
                     }
                 }
+                        } // end loop
+                    }) // end inner batch loop task
+                }; // end handle assignment
+
+                if let Err(e) = handle.await {
+                    if e.is_panic() {
+                        eprintln!("[{}] [{}] Batch processor panicked — restarting in 1s",
+                            Utc::now().format("%H:%M:%S UTC"), watchdog_instance_id);
+                        sleep(Duration::from_secs(1)).await;
+                    }
+                }
+                // If handle returned Ok(()), the loop exited normally — restart immediately
             }
-        });
+        }); // end watchdog
 
         // Heartbeat presence every 30s — role updates dynamically from worker state
         let hb_client = self.client.clone();
@@ -399,8 +466,12 @@ impl WorkerHarness {
                                     for line in event_str.lines() {
                                         if let Some(data) = line.strip_prefix("data: ") {
                                             if let Ok(msg) = serde_json::from_str::<Message>(data) {
-                                                // Queue the message
-                                                {
+                                                // Pings get answered immediately — never block on queue
+                                                let ping_re = Regex::new(PING_PATTERN).unwrap();
+                                                if ping_re.is_match(msg.content.trim()) {
+                                                    let _ = self.handle_harness_tier(&[msg]).await;
+                                                } else {
+                                                    // Queue the message
                                                     let mut queue = self.message_queue.lock().await;
                                                     queue.push(msg);
 
