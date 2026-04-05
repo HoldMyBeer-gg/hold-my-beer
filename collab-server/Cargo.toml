@@ -2,8 +2,10 @@
 name = "collab-server"
 version = "0.3.0"
 edition = "2021"
-authors = ["Claude IPC Contributors"]
-description = "API server for inter-instance communication between Claude Code workers"
+authors = ["jabberwock"]
+description = "API server for inter-process communication between AI agents."
+license = "AGPL-3.0 + Commons Clause"
+license-file = "LICENSE"
 
 [[bin]]
 name = "collab-server"
