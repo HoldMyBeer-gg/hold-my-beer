@@ -1,4 +1,4 @@
-Copyright (C) 2026 hm-beer. All rights reserved.
+Copyright (C) 2026 jabberwock. All rights reserved.
 
 ---
 
@@ -22,7 +22,7 @@ different licensees for a fee.
 
 "License" means the GNU Affero General Public License version 3.
 "Software" means AI IPC (collab / collab-server).
-"Licensor" means hm-beer.
+"Licensor" means jabberwock.
 
 ---
 
