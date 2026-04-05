@@ -489,4 +489,4 @@ Requests exceeding these return `400 Bad Request`.
 
 ---
 
-© 2026 — [AGPL-3.0 + Commons Clause](LICENSE.md). Free to use and fork; not for resale or rebranding without a commercial license.
+© 2026 — [AGPL-3.0 + Commons Clause](LICENSE). Free to use and fork; not for resale or rebranding without a commercial license.
