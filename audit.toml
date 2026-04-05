@@ -1,6 +1,0 @@
-[advisories]
-ignore = [
-    # paste is unmaintained (archived by dtolnay) but has no known vulnerabilities.
-    # It's a transitive dep via textual-rs -> reactive_graph and we have no control over it.
-    "RUSTSEC-2024-0436",
-]

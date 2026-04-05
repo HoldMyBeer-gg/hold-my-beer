@@ -1,6 +1,6 @@
 # AI IPC
 
-[![CI](https://github.com/jabberwock/claude-ipc/actions/workflows/rust.yml/badge.svg)](https://github.com/jabberwock/claude-ipc/actions "GitHub Actions")
+[![CI](https://github.com/jabberwock/ai-ipc/actions/workflows/rust.yml/badge.svg)](https://github.com/jabberwock/ai-ipc/actions "GitHub Actions")
 [![License](https://img.shields.io/badge/License-AGPL--3.0%20%2B%20Commons%20Clause-30363D?style=flat&labelColor=1e3a5f)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![YouTube — demo](https://img.shields.io/badge/YouTube-Watch%20demo-FF0000?logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=JJQKMES5zOY)
@@ -34,14 +34,16 @@ Create `workers.yaml` in your project:
 ```yaml
 server: http://localhost:8000
 cli_template: "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"
-cli_template_light: "claude -p {prompt} --model {model} --plan"  # optional — used for light-tier calls
+cli_template_light: "ollama-web -p {prompt}"  # optional — used for light-tier calls
 model: haiku              # optional — only needed if cli_template uses {model}
 workers:
   - name: frontend
     role: "Frontend development"
   - name: backend
     role: "Backend API development"
-    cli_template_light: "cursor -p {prompt} --plan"  # per-worker override
+  - name: ux-expert 
+    role: "UX expert"
+    cli_template_light: "gemini -p {prompt}"  # per-worker override
 ```
 
 The `cli_template` tells workers which AI CLI to invoke. Replace `claude` with your tool of choice (e.g., `cursor -p {prompt}`, `ollama run {model} {prompt}`). Placeholders: `{prompt}`, `{model}`, `{workdir}`. The `model` field is optional — only required if your `cli_template` uses `{model}`. If `cli_template` is omitted, `collab init` writes a `{agent}` placeholder that must be edited before workers can start.
@@ -311,7 +313,7 @@ If JSON parsing fails, the entire output is sent as a raw text response (fallbac
 Define `hands_off_to` in `workers.yaml` to create automatic handoff chains:
 
 ```yaml
-cli_template: "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"
+cli_template: "agent -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"
 workers:
   - name: researcher
     role: "Data researcher"
@@ -324,7 +326,7 @@ workers:
   - name: builder
     role: "Frontend developer"
     hands_off_to: [project-manager]
-    cli_template: "cursor -p {prompt} --model {model}"  # per-worker override
+    cli_template: "codex -p {prompt} --model {model}"  # per-worker override
 
   - name: project-manager
     role: "Coordinate the team, handle exceptions"
@@ -434,32 +436,6 @@ The server requires a token. Set via `.env` or `~/.collab.toml` — never as a C
 </details>
 
 <details>
-<summary><strong>Wiring into Claude Code (CLAUDE.md)</strong></summary>
-
-For workers running as live Claude Code sessions (not using the headless `collab worker` harness):
-
-```markdown
-## Collaboration
-
-At the start of every session:
-1. Run `collab status` — unread messages + roster. Treat pending messages as blocking.
-2. If there are messages, respond before proceeding: `collab reply @sender "response"`
-3. Run `collab stream --role "<project>: <your current task>"` for presence.
-
-Signal other agents when (and only when):
-- A public API changed they depend on
-- A shared resource state changed (migration running, branch force-pushed)
-- You found something blocking that affects their work
-
-Use `collab broadcast` for team-wide announcements.
-Do NOT message for progress updates or things they don't need to act on.
-```
-
-For most setups, prefer `collab worker` (headless harness) over live sessions — it eliminates idle token cost entirely.
-
-</details>
-
-<details>
 <summary><strong>Security checklist</strong></summary>
 
 **Auth is required.** The server won't start without a token.
@@ -513,4 +489,4 @@ Requests exceeding these return `400 Bad Request`.
 
 ---
 
-© 2026 — [AGPL-3.0 + Commons Clause](LICENSE). Free to use and fork; not for resale or rebranding without a commercial license.
+© 2026 — [AGPL-3.0 + Commons Clause](LICENSE.md). Free to use and fork; not for resale or rebranding without a commercial license.
