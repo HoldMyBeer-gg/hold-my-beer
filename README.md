@@ -17,7 +17,7 @@ Picture something ambitious — purely as an example: you describe a jet engine 
 
 **Zero idle cost** means the expensive parts only wake up **when there’s real work** — not spinning in empty loops. That’s the architecture, in one sentence for everyone.
 
-![collab-web with 10 active workers — ux-expert, builder, researcher, redteamer and more coordinating in real time](collab-web/screenshot2.png)
+![collab-web with 10 active workers — ux-expert, builder, researcher, redteamer and more coordinating in real time](screenshot2.png)
 
 [![Watch the demo](https://img.youtube.com/vi/JJQKMES5zOY/maxresdefault.jpg)](https://www.youtube.com/watch?v=JJQKMES5zOY)
 
@@ -77,7 +77,7 @@ cd collab-web && ./run
 # opens http://localhost:3877
 ```
 
-![collab-web dashboard showing workers coordinating in real time](collab-web/screenshot.png)
+![collab-web dashboard showing workers coordinating in real time](screenshot.png)
 
 Workers appear on the roster. Messages stream in live — type `@name` in the message field to DM a worker, or leave it blank to broadcast to everyone.
 
