@@ -12,6 +12,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-server"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "chrono",
+ "clap",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sqlx",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -426,28 +448,6 @@ dependencies = [
  "textual-rs",
  "tokio",
  "toml",
-]
-
-[[package]]
-name = "collab-server"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "axum",
- "chrono",
- "clap",
- "serde",
- "serde_json",
- "sha1",
- "sqlx",
- "tokio",
- "tokio-stream",
- "toml",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
 ]
 
 [[package]]
