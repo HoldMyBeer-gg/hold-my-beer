@@ -12,6 +12,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-ipc"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "crossterm",
+ "libc",
+ "predicates",
+ "ratatui",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha1",
+ "shlex",
+ "tempfile",
+ "textual-rs",
+ "tokio",
+ "toml",
+]
+
+[[package]]
 name = "ai-server"
 version = "0.3.0"
 dependencies = [
@@ -423,31 +448,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
 dependencies = [
  "error-code",
-]
-
-[[package]]
-name = "collab"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "chrono",
- "clap",
- "crossterm",
- "libc",
- "predicates",
- "ratatui",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha1",
- "shlex",
- "tempfile",
- "textual-rs",
- "tokio",
- "toml",
 ]
 
 [[package]]
