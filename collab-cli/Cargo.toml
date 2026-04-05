@@ -1,5 +1,5 @@
 [package]
-name = "collab"
+name = "ai-cli"
 version = "0.3.0"
 edition = "2021"
 authors = ["jabberwock"]
