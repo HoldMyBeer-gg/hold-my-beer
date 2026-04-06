@@ -172,7 +172,7 @@ for m in reversed(candidates):
 # No valid JSON found — wrap raw text as a response so harness always gets valid JSON
 print(json.dumps({'response': text.strip() or None, 'delegate': [], 'messages': None, 'completed_tasks': [], 'continue': False, 'state_update': {}}))
 " 2>/dev/null)
-            echo "$json_block"
+            echo "$json_block" | tee -a /tmp/ollama-web-debug.log
         else
             echo "$content"
         fi
