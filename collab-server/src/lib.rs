@@ -25,7 +25,7 @@ const MAX_ROLE_LEN: usize = 256;
 const MAX_CONTENT_LEN: usize = 4096;
 const MAX_REFS_COUNT: usize = 20;
 const MAX_REF_LEN: usize = 64;
-const MAX_TODO_DESC_LEN: usize = 512;
+const MAX_TODO_DESC_LEN: usize = 2048;
 
 fn is_valid_identifier(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')

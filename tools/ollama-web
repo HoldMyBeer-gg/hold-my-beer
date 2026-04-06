@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ollama-web — ollama wrapper with native tool-calling (search + fetch)
+# ollama-web — ollama wrapper with native tool-calling (search + fetch + bash)
 # Uses /api/chat with tools JSON schema — works on qwen2.5, llama3.1, mistral-nemo, etc.
 #
 # Usage: ollama-web -p "prompt" [--model MODEL] [--num-ctx N]
@@ -44,6 +44,11 @@ for url, title in results[:5]:
     print(f'{html.unescape(title).strip()}: {url}')
 " 2>/dev/null | head -c 4000
     fi
+}
+
+do_bash() {
+    local cmd="$1"
+    { bash -c "$cmd" 2>&1 || true; } | head -c 4000
 }
 
 do_fetch() {
@@ -91,6 +96,20 @@ TOOLS='[
         "required": ["url"]
       }
     }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "bash",
+      "description": "Execute a shell command and return its output. Use this to run collab commands (e.g. collab todo add, collab add, collab list), read/write files, or perform any shell operation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {"type": "string", "description": "Shell command to execute"}
+        },
+        "required": ["command"]
+      }
+    }
   }
 ]'
 
@@ -122,7 +141,32 @@ for round in $(seq 1 $MAX_ROUNDS); do
 
     # No tool calls — we're done
     if [[ "$(echo "$tool_calls" | jq 'length')" -eq 0 ]]; then
-        echo "$content"
+        # If the prompt asks for JSON output, extract the JSON block from the response
+        # (models often wrap it in prose or markdown code fences)
+        if echo "$PROMPT" | grep -q '"response"' && echo "$PROMPT" | grep -q '"delegate"'; then
+            json_block=$(echo "$content" | python3 -c "
+import sys, re, json
+text = sys.stdin.read()
+# Try to find a JSON object in the output
+matches = re.findall(r'\{[\s\S]*\}', text)
+for m in reversed(matches):
+    try:
+        obj = json.loads(m)
+        if 'response' in obj or 'delegate' in obj or 'continue' in obj:
+            # Enforce safe defaults regardless of what the model said
+            obj['messages'] = None
+            obj['continue'] = False
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+# Fall back to raw content
+print(text)
+" 2>/dev/null)
+            echo "$json_block"
+        else
+            echo "$content"
+        fi
         exit 0
     fi
 
@@ -146,6 +190,11 @@ for round in $(seq 1 $MAX_ROUNDS); do
                 url=$(echo "$args" | jq -r '.url')
                 echo "[fetch: $url]" >&2
                 result=$(do_fetch "$url")
+                ;;
+            bash)
+                cmd=$(echo "$args" | jq -r '.command')
+                echo "[bash: $cmd]" >&2
+                result=$(do_bash "$cmd")
                 ;;
             *)
                 result="Unknown tool: $name"
