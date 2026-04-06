@@ -570,6 +570,9 @@ When done, your FINAL output must be ONLY a JSON object (no other text before or
 
 {{
   \"response\": \"your reply to the sender (string or null)\",
+  \"delegate\": [],
+  \"messages\": null,
+  \"completed_tasks\": [],
   \"continue\": false,
   \"state_update\": {{\"status\": \"what you're doing now\"}}
 }}
