@@ -143,7 +143,7 @@ for round in $(seq 1 $MAX_ROUNDS); do
     if [[ "$(echo "$tool_calls" | jq 'length')" -eq 0 ]]; then
         # If the prompt asks for JSON output, extract the JSON block from the response
         # (models often wrap it in prose or markdown code fences)
-        if echo "$PROMPT" | grep -q '"response"' && echo "$PROMPT" | grep -q '"delegate"'; then
+        if echo "$PROMPT" | grep -q '"response"'; then
             json_block=$(echo "$content" | python3 -c "
 import sys, re, json
 text = sys.stdin.read()
