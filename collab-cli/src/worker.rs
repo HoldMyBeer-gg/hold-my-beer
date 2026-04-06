@@ -574,7 +574,7 @@ When done, your FINAL output must be ONLY a JSON object (no other text before or
   \"state_update\": {{\"status\": \"what you're doing now\"}}
 }}
 
-Do NOT run any collab CLI commands. Focus on your actual work.",
+Do NOT use `collab send`, `collab todo add`, or `collab broadcast` — output those via JSON instead. Read commands (`collab status`, `collab todo list`) are fine. Focus on your actual work.",
                 self.instance_id,
                 self.get_role(),
                 messages.len(),
@@ -678,7 +678,7 @@ Fields:
 - continue: true to keep working autonomously, false when blocked or done
 - state_update: persist state for next invocation. Include \"status\" to update your roster presence
 
-Do NOT run any collab CLI commands. The harness handles all messaging and task delivery. Focus on your actual work.",
+Do NOT use `collab send`, `collab todo add`, or `collab broadcast` — the harness delivers those from your JSON output. Read commands (`collab status`, `collab todo list`) are fine if you need to verify state. Focus on your actual work.",
             self.instance_id,
             self.get_role(),
             teammates_str,
