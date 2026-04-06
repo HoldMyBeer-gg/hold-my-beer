@@ -147,9 +147,18 @@ for round in $(seq 1 $MAX_ROUNDS); do
             json_block=$(echo "$content" | python3 -c "
 import sys, re, json
 text = sys.stdin.read()
-# Try to find a JSON object in the output
-matches = re.findall(r'\{[\s\S]*\}', text)
-for m in reversed(matches):
+# Try to find a JSON object in the output — try progressively smaller matches
+# re.findall with greedy pattern returns one big match; use non-greedy fallback too
+candidates = []
+# Greedy: outermost { to }
+candidates += re.findall(r'\{[\s\S]*\}', text)
+# Non-greedy: each {...} block separately
+candidates += re.findall(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}', text)
+seen = set()
+for m in reversed(candidates):
+    if m in seen:
+        continue
+    seen.add(m)
     try:
         obj = json.loads(m)
         if 'response' in obj or 'delegate' in obj or 'continue' in obj:
@@ -160,8 +169,8 @@ for m in reversed(matches):
             sys.exit(0)
     except Exception:
         pass
-# Fall back to raw content
-print(text)
+# No valid JSON found — wrap raw text as a response so harness always gets valid JSON
+print(json.dumps({'response': text.strip() or None, 'delegate': [], 'messages': None, 'completed_tasks': [], 'continue': False, 'state_update': {}}))
 " 2>/dev/null)
             echo "$json_block"
         else
