@@ -1,0 +1,5 @@
+node_modules
+src-tauri
+pnpm-lock.yaml
+package.json
+.tauriignore

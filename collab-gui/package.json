@@ -1,0 +1,16 @@
+{
+  "name": "hold-my-beer-gui",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "serve": "node dev-server.js",
+    "test": "playwright test",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@playwright/test": "^1.48.0"
+  }
+}

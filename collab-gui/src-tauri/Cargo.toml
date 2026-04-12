@@ -1,0 +1,28 @@
+[package]
+name = "hold-my-beer-gui"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop GUI for Hold My Beer — AI team coordination"
+license = "AGPL-3.0"
+
+[lib]
+name = "hold_my_beer_gui"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "hold-my-beer-gui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri       = { version = "2", features = ["devtools"] }
+tauri-plugin-shell = "2"
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+tokio       = { version = "1", features = ["full"] }
+rand        = "0.8"
+
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+rfd = "0.15"

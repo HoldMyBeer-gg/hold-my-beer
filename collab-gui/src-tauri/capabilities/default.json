@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.json",
+  "identifier": "default",
+  "description": "Default permissions for Hold My Beer GUI",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "binaries/collab", "sidecar": true, "args": true },
+        { "name": "binaries/collab-server", "sidecar": true, "args": true }
+      ]
+    }
+  ]
+}

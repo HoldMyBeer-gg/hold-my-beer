@@ -28,7 +28,26 @@ Picture something ambitious — purely as an example: you describe a jet engine 
 
 ---
 
-## Quick Start (5 minutes)
+## Quick Start
+
+### Easiest: desktop GUI
+
+```bash
+git clone https://github.com/HoldMyBeer-gg/hold-my-beer
+cd hold-my-beer
+./start.sh          # macOS / Linux
+.\start.ps1         # Windows (PowerShell)
+```
+
+The script checks for **cargo**, **node**, and **pnpm**, tells you how to install any that are missing, then builds the **Hold My Beer** desktop app and launches it. First build takes a few minutes; subsequent launches are fast.
+
+From there the app walks you through token, project folder, and worker setup in a short wizard — server, workers, dashboard, and token/cost tracking are all one window.
+
+> **Prefer the CLI?** The same code powers everything. The manual `workers.yaml` → `collab-server` → `collab start all` → `collab-web` flow is documented below — skip to [CLI Quick Start](#cli-quick-start).
+
+---
+
+<h3 id="cli-quick-start">CLI Quick Start (5 minutes)</h3>
 
 ### 1. Initialize workers
 
