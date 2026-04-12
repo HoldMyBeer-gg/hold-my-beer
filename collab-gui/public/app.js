@@ -1,0 +1,1464 @@
+'use strict';
+
+// ── Tauri bridge ─────────────────────────────────────────────────────────────
+// window.__TAURI__ is injected when running inside Tauri (withGlobalTauri: true).
+// Tauri 2.x exposes: window.__TAURI__.core.invoke  and  window.__TAURI__.event.listen
+// Wrap defensively so a bad path never crashes the entire script block.
+const _T = (typeof window.__TAURI__ !== 'undefined') ? window.__TAURI__ : null;
+const invoke = (_T && _T.core && typeof _T.core.invoke === 'function')
+  ? (...a) => _T.core.invoke(...a)
+  : async (cmd, args) => { console.warn('[invoke stub]', cmd, args); return null; };
+const listen = (_T && _T.event && typeof _T.event.listen === 'function')
+  ? (...a) => _T.event.listen(...a)
+  : async () => () => {};
+const _isTauri = !!(_T && _T.core);
+
+// ── App state ─────────────────────────────────────────────────────────────────
+let cfg = {
+  token:         '',
+  serverUrl:     'http://localhost:8000',
+  identity:      'human',
+  projectDir:    '',
+  setupComplete: false,
+  cliTemplate:   'claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit',
+  model:         'haiku',
+};
+
+let workers = [
+  { name: 'builder',  role: 'Build features and write code' },
+  { name: 'reviewer', role: 'Review code and provide feedback' },
+];
+
+let currentStep = 1;
+let sseConn     = null;
+let sseRetries  = 0;
+let rosterTimer = null;
+let todosTimer  = null;
+let serverPollTimer = null;
+let presenceTimer = null;
+let dashboardActive = false;
+
+// Message state
+let allMessages = [];      // [{id,sender,recipient,content,timestamp,hash}]
+let senderColors = {};     // sender → color index 0-5
+let colorCounter = 0;
+let activeTab = 'all';
+let unreadMentions = 0;
+let todosVisible  = false;
+let serverLogOpen = false;
+let usageOpen     = false;
+let usageTimer    = null;
+
+const CLI_TEMPLATES = {
+  claude:  'claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit',
+  cursor:  'cursor -p {prompt}',
+  ollama:  'ollama run llama3.1 {prompt}',
+  codex:   'codex -p {prompt} --model {model}',
+  custom:  '',
+};
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+(async function init() {
+  // Load persisted config
+  try {
+    const saved = await invoke('load_config');
+    if (saved) Object.assign(cfg, saved);
+  } catch (e) { /* not in Tauri */ }
+
+  // Listen for server log events
+  await listen('server-log', e => appendServerLog(e.payload, false));
+  // Listen for command output during launch
+  await listen('cmd-output', e => {
+    const p = e.payload;
+    appendLaunchLog(p.line, p.stream === 'err');
+    appendServerLog(p.line, p.stream === 'err');
+  });
+
+  if (cfg.setupComplete && cfg.token) {
+    // Already set up — go straight to dashboard
+    showDashboard();
+  } else {
+    // Show wizard, pre-fill fields
+    prefillWizard();
+    // If a project dir is already remembered and has workers.yaml, load it.
+    if (cfg.projectDir) {
+      try { await loadExistingProject(cfg.projectDir); } catch (e) {}
+    }
+  }
+})();
+
+// ── Wizard helpers ────────────────────────────────────────────────────────────
+function prefillWizard() {
+  if (cfg.token)      document.getElementById('s1-token').value    = cfg.token;
+  if (cfg.serverUrl)  document.getElementById('s1-url').value      = cfg.serverUrl;
+  if (cfg.identity)   document.getElementById('s1-identity').value = cfg.identity;
+  if (cfg.projectDir) document.getElementById('s2-dir').value      = cfg.projectDir;
+  renderWorkerCards();
+}
+
+function goStep(n) {
+  const prev = currentStep;
+  currentStep = n;
+
+  document.getElementById(`step-${prev}`).className = `step ${n > prev ? 'past' : 'future'}`;
+  document.getElementById(`step-${n}`).className    = 'step active';
+
+  // Progress dots
+  document.querySelectorAll('.wiz-dot').forEach((d, i) => {
+    const s = i + 1;
+    d.className = 'wiz-dot ' + (s < n ? 'done' : s === n ? 'active' : '');
+  });
+}
+
+
+// Step 1 validation
+function step1Next() {
+  const token    = document.getElementById('s1-token').value.trim();
+  const url      = document.getElementById('s1-url').value.trim();
+  const identity = document.getElementById('s1-identity').value.trim();
+
+  if (!token)    { toast('Enter or generate a token first.', true); return; }
+  if (!url)      { toast('Enter the server URL.', true); return; }
+  if (!identity) { toast('Enter your name for the chat.', true); return; }
+
+  cfg.token     = token;
+  cfg.serverUrl = url;
+  cfg.identity  = identity;
+  goStep(2);
+}
+
+// Step 2 validation
+function step2Next() {
+  const dir = document.getElementById('s2-dir').value.trim();
+  if (!dir) { toast('Choose a project directory first.', true); return; }
+  cfg.projectDir = dir;
+  goStep(3);
+}
+
+// Step 3 validation
+function step3Next() {
+  // Pull values from worker cards
+  const cards = document.querySelectorAll('.worker-card');
+  const updated = [];
+  let ok = true;
+  cards.forEach(card => {
+    const name = card.querySelector('.wc-name').value.trim();
+    const role = card.querySelector('.wc-role').value.trim();
+    if (!name) { toast('All workers need a name.', true); ok = false; }
+    if (!role) { toast('All workers need a role description.', true); ok = false; }
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+      toast(`Worker name "${name}" must be lowercase letters, numbers, and hyphens only.`, true);
+      ok = false;
+    }
+    updated.push({ name, role });
+  });
+  if (!ok) return;
+  if (updated.length === 0) { toast('Add at least one worker.', true); return; }
+  workers = updated;
+  cfg.cliTemplate = getCliTemplate();
+  cfg.model       = document.getElementById('s3-model').value.trim() || 'haiku';
+  goStep(4);
+}
+
+function getCliTemplate() {
+  const tool = document.getElementById('s3-tool').value;
+  if (tool === 'custom') return document.getElementById('s3-custom-tmpl').value.trim();
+  return CLI_TEMPLATES[tool] || CLI_TEMPLATES.claude;
+}
+
+function onToolChange() {
+  const tool = document.getElementById('s3-tool').value;
+  document.getElementById('custom-template-field').hidden = (tool !== 'custom');
+}
+
+// Worker card rendering
+function renderWorkerCards() {
+  const list = document.getElementById('workers-list');
+  list.innerHTML = '';
+  workers.forEach((w, i) => {
+    const div = document.createElement('div');
+    div.className = 'worker-card';
+    div.innerHTML = `
+      <div class="field">
+        <label>Name</label>
+        <input class="inp wc-name inp-mono" type="text" value="${esc(w.name)}" placeholder="backend" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="field">
+        <label>Role</label>
+        <input class="inp wc-role" type="text" value="${esc(w.role)}" placeholder="What this worker does">
+      </div>
+    `;
+    const rm = document.createElement('button');
+    rm.className = 'btn btn-ghost btn-icon wc-remove';
+    rm.title = 'Remove worker';
+    rm.textContent = '✕';
+    rm.addEventListener('click', () => removeWorker(i));
+    div.appendChild(rm);
+    list.appendChild(div);
+  });
+}
+
+// Read the current on-screen worker card values back into `workers` so that
+// a subsequent re-render doesn't clobber edits the user has typed but not yet
+// submitted. Any card whose DOM is gone is skipped.
+function syncWorkersFromDom() {
+  const cards = document.querySelectorAll('.worker-card');
+  if (!cards.length) return;
+  const updated = [];
+  cards.forEach(card => {
+    const nameEl = card.querySelector('.wc-name');
+    const roleEl = card.querySelector('.wc-role');
+    updated.push({
+      name: nameEl ? nameEl.value : '',
+      role: roleEl ? roleEl.value : '',
+    });
+  });
+  workers = updated;
+}
+
+function addWorker() {
+  syncWorkersFromDom();
+  workers.push({ name: '', role: '' });
+  renderWorkerCards();
+}
+
+function removeWorker(i) {
+  syncWorkersFromDom();
+  workers.splice(i, 1);
+  renderWorkerCards();
+}
+
+function _diagBanner(msg, kind) {
+  let el = document.getElementById('diag-banner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'diag-banner';
+    document.body.appendChild(el);
+  }
+  el.className = 'diag-banner' + (kind === 'err' ? ' err' : kind === 'ok' ? ' ok' : '');
+  el.textContent = msg;
+}
+
+async function doGenerateToken() {
+  const input = document.getElementById('s1-token');
+  if (!input) return;
+
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const token = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+
+  input.value = token;
+  input.type = 'text';
+  setTimeout(() => { input.type = 'password'; }, 3000);
+}
+
+window.addEventListener('error', (e) => {
+  _diagBanner('UNCAUGHT: ' + (e && e.message ? e.message : 'unknown') + ' @ ' + (e.filename||'?') + ':' + (e.lineno||'?'), 'err');
+});
+window.addEventListener('unhandledrejection', (e) => {
+  _diagBanner('UNHANDLED REJECTION: ' + (e && e.reason ? e.reason : 'unknown'), 'err');
+});
+
+async function doBrowse() {
+  try {
+    const dir = await invoke('pick_directory');
+    if (dir) {
+      document.getElementById('s2-dir').value = dir;
+      cfg.projectDir = dir;
+      await loadExistingProject(dir);
+    }
+  } catch (e) {
+    toast('Could not open directory picker: ' + e, true);
+  }
+}
+
+// If <dir>/workers.yaml exists, parse it and populate the wizard state so the
+// user sees their existing project instead of the blank defaults.
+async function loadExistingProject(dir) {
+  const yamlPath = dir + '/workers.yaml';
+  let exists = false;
+  try { exists = await invoke('path_exists', { path: yamlPath }); } catch (e) {}
+  if (!exists) return false;
+
+  let text = '';
+  try { text = await invoke('read_file', { path: yamlPath }); }
+  catch (e) { toast('Found workers.yaml but could not read it: ' + e, true); return false; }
+
+  const parsed = parseWorkersYaml(text);
+  if (!parsed) return false;
+
+  if (parsed.cli_template) cfg.cliTemplate = parsed.cli_template;
+  if (parsed.model)        cfg.model       = parsed.model;
+  if (parsed.workers && parsed.workers.length) workers = parsed.workers;
+
+  // Reflect into the step-3 controls if they're mounted.
+  const toolEl = document.getElementById('s3-tool');
+  if (toolEl) {
+    const match = Object.entries(CLI_TEMPLATES).find(([k, v]) => v && v === cfg.cliTemplate);
+    if (match) {
+      toolEl.value = match[0];
+    } else {
+      toolEl.value = 'custom';
+      const tmplEl = document.getElementById('s3-custom-tmpl');
+      if (tmplEl) tmplEl.value = cfg.cliTemplate;
+    }
+    onToolChange();
+  }
+  const modelEl = document.getElementById('s3-model');
+  if (modelEl && cfg.model) modelEl.value = cfg.model;
+  renderWorkerCards();
+
+  toast('Loaded existing workers.yaml from ' + dir);
+  return true;
+}
+
+// Minimal parser for the exact shape buildWorkersYaml produces: flat scalar
+// keys plus a `workers:` list of `- name: x` / `  role: "y"` pairs. Not a
+// general YAML parser — anything fancier is ignored.
+function parseWorkersYaml(text) {
+  const out = { workers: [] };
+  const lines = text.split(/\r?\n/);
+  const unquote = s => {
+    s = s.trim();
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+      return s.slice(1, -1).replace(/\\"/g, '"');
+    }
+    return s;
+  };
+  let inWorkers = false;
+  let current = null;
+  for (const raw of lines) {
+    if (!raw.trim() || raw.trim().startsWith('#')) continue;
+    if (!inWorkers) {
+      if (/^workers\s*:\s*$/.test(raw)) { inWorkers = true; continue; }
+      const m = raw.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+      if (m) out[m[1]] = unquote(m[2]);
+      continue;
+    }
+    // Inside `workers:` block
+    const item = raw.match(/^\s*-\s*name\s*:\s*(.*)$/);
+    if (item) {
+      if (current) out.workers.push(current);
+      current = { name: unquote(item[1]), role: '' };
+      continue;
+    }
+    const field = raw.match(/^\s+([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+    if (field && current) {
+      current[field[1]] = unquote(field[2]);
+      continue;
+    }
+    // A top-level key after the list ends the block.
+    if (/^[A-Za-z_]/.test(raw)) {
+      if (current) { out.workers.push(current); current = null; }
+      inWorkers = false;
+      const m = raw.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)$/);
+      if (m) out[m[1]] = unquote(m[2]);
+    }
+  }
+  if (current) out.workers.push(current);
+  return out;
+}
+
+// ── Launch sequence ───────────────────────────────────────────────────────────
+async function doLaunch() {
+  document.getElementById('launch-btn').hidden = true;
+  document.getElementById('back-from-4').disabled = true;
+  clearLaunchLog();
+  // Track non-fatal failures so we can hold the user on this screen instead
+  // of auto-jumping to the dashboard before they can read the error.
+  let launchHadError = false;
+
+  const envs = [
+    ['COLLAB_TOKEN', cfg.token],
+    ['COLLAB_SERVER', cfg.serverUrl],
+    ['COLLAB_INSTANCE', cfg.identity || 'gui'],
+  ];
+
+  // Step 1: Write workers.yaml. Skip the write when the current wizard
+  // state exactly matches what's on disk (so a re-launch is a no-op), but
+  // otherwise always write — the user went through the wizard on purpose.
+  // A previous version prompted via `window.confirm()` on differences, but
+  // `confirm()` in a Tauri webview can silently return false, which was
+  // throwing away intentional renames.
+  setLaunchItem('li-config', 'running');
+  const yaml = buildWorkersYaml();
+  const yamlPath = cfg.projectDir + '/workers.yaml';
+  let existing = null;
+  try {
+    const exists = await invoke('path_exists', { path: yamlPath });
+    if (exists) existing = await invoke('read_file', { path: yamlPath });
+  } catch (e) { /* treat as missing */ }
+
+  if (existing === yaml) {
+    setLaunchItem('li-config', 'done');
+    appendLaunchLog('• workers.yaml unchanged, skipping write', false);
+  } else {
+    appendLaunchLog((existing === null ? 'Writing ' : 'Updating ') + yamlPath, false);
+    try {
+      await invoke('write_file', { path: yamlPath, content: yaml });
+      setLaunchItem('li-config', 'done');
+      appendLaunchLog(existing === null ? '✓ workers.yaml written' : '✓ workers.yaml updated', false);
+    } catch (e) {
+      setLaunchItem('li-config', 'error', e);
+      appendLaunchLog('✗ ' + e, true);
+      resetLaunchBtn();
+      return;
+    }
+  }
+
+  // Step 2: Start collab-server
+  setLaunchItem('li-server', 'running');
+  appendLaunchLog('Starting collab-server on ' + cfg.serverUrl, false);
+  try {
+    await invoke('start_server', {
+      serverUrl:  cfg.serverUrl,
+      token:      cfg.token,
+      projectDir: cfg.projectDir,
+    });
+    // Give the server a moment to start
+    await sleep(1200);
+    setLaunchItem('li-server', 'done');
+    appendLaunchLog('✓ Server started', false);
+  } catch (e) {
+    setLaunchItem('li-server', 'error', e);
+    appendLaunchLog('✗ ' + e, true);
+    resetLaunchBtn();
+    return;
+  }
+
+  // Step 3: collab init
+  setLaunchItem('li-init', 'running');
+  appendLaunchLog('Running: collab init workers.yaml', false);
+  try {
+    const code = await invoke('run_command', {
+      program: 'collab',
+      args:    ['init', 'workers.yaml'],
+      cwd:     cfg.projectDir,
+      envs,
+    });
+    if (code !== 0) throw new Error(`collab init exited with code ${code}`);
+    setLaunchItem('li-init', 'done');
+    appendLaunchLog('✓ Worker environments created', false);
+  } catch (e) {
+    setLaunchItem('li-init', 'error', e);
+    appendLaunchLog('✗ ' + e, true);
+    launchHadError = true;
+    // Non-fatal — continue
+  }
+
+  // Step 4: collab start all
+  setLaunchItem('li-workers', 'running');
+  appendLaunchLog('Running: collab start all', false);
+  try {
+    const code = await invoke('run_command', {
+      program: 'collab',
+      args:    ['start', 'all'],
+      cwd:     cfg.projectDir,
+      envs,
+    });
+    if (code !== 0 && code !== null) {
+      appendLaunchLog(`collab start all exited with code ${code} (workers may still start)`, false);
+    }
+    setLaunchItem('li-workers', 'done');
+    appendLaunchLog('✓ Workers started', false);
+  } catch (e) {
+    setLaunchItem('li-workers', 'error', e);
+    appendLaunchLog('✗ ' + e, true);
+    launchHadError = true;
+  }
+
+  // Save config
+  cfg.setupComplete = true;
+  try {
+    await invoke('save_config', { config: cfg });
+  } catch (e) { /* non-fatal */ }
+
+  document.getElementById('open-dash-btn').hidden = false;
+  document.getElementById('back-from-4').disabled = false;
+  if (launchHadError) {
+    appendLaunchLog(
+      '\n⚠ Launch finished with errors — review the log above, then click ' +
+      '"Open Dashboard" or "Back" to fix settings.',
+      true
+    );
+    resetLaunchBtn();
+  } else {
+    appendLaunchLog('\n🚀 Ready! Opening dashboard…', false);
+    setTimeout(toDashboard, 800);
+  }
+}
+
+function setLaunchItem(id, state, detail = '') {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.className = 'launch-item ' + state;
+  const icon = el.querySelector('.li-icon');
+  icon.textContent = state === 'done' ? '✓' : state === 'error' ? '✗' : state === 'running' ? '⏳' : '⏳';
+  const d = el.querySelector('.li-detail');
+  if (d && detail) d.textContent = String(detail).slice(0, 80);
+}
+
+function resetLaunchBtn() {
+  document.getElementById('launch-btn').hidden = false;
+  document.getElementById('back-from-4').disabled = false;
+}
+
+function appendLaunchLog(line, isErr) {
+  const log = document.getElementById('launch-log');
+  if (!log) return;
+  const span = document.createElement('span');
+  span.className = isErr ? 'log-err' : '';
+  span.textContent = line + '\n';
+  log.appendChild(span);
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearLaunchLog() {
+  const log = document.getElementById('launch-log');
+  if (log) log.innerHTML = '';
+}
+
+function buildWorkersYaml() {
+  // Escape a string for use inside a double-quoted YAML scalar:
+  // collapse any CR/LF variants to a space so the value stays on one line.
+  const yamlStr = s => s.replace(/"/g, '\\"').replace(/\r?\n|\r/g, ' ');
+  const lines = [];
+  lines.push(`server: ${cfg.serverUrl}`);
+  lines.push(`cli_template: "${yamlStr(cfg.cliTemplate)}"`);
+  if (cfg.model) lines.push(`model: ${cfg.model}`);
+  lines.push(`output_dir: ./workers`);
+  lines.push(`codebase_path: ${cfg.projectDir}`);
+  lines.push(`workers:`);
+  for (const w of workers) {
+    lines.push(`  - name: ${w.name}`);
+    lines.push(`    role: "${yamlStr(w.role)}"`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+// ── Wizard → Dashboard ────────────────────────────────────────────────────────
+function toDashboard() {
+  if (dashboardActive) return;
+  dashboardActive = true;
+  // Prevent a second call (e.g. the 800ms auto-timer racing with a button click).
+  document.getElementById('open-dash-btn').hidden = true;
+
+  const wiz  = document.getElementById('wizard');
+  const dash = document.getElementById('dashboard');
+  wiz.classList.add('exiting');
+  setTimeout(() => {
+    wiz.hidden = true;
+    dash.hidden = false;
+    requestAnimationFrame(() => dash.classList.add('visible'));
+    showDashboard();
+  }, 350);
+}
+
+function goToWizard() {
+  dashboardActive = false;
+  const wiz  = document.getElementById('wizard');
+  const dash = document.getElementById('dashboard');
+  dash.classList.remove('visible');
+  setTimeout(() => {
+    dash.hidden = true;
+    wiz.hidden = false;
+    wiz.classList.remove('exiting');
+    teardownDashboard();
+    prefillWizard();
+    goStep(1);
+  }, 350);
+}
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
+function showDashboard() {
+  // Pre-fill compose from identity
+  const from = document.getElementById('compose-from');
+  if (from && cfg.identity) from.value = cfg.identity;
+
+  // Update server URL badge
+  const badge = document.getElementById('server-url-badge');
+  if (badge) badge.textContent = cfg.serverUrl.replace('http://', '').replace('https://', '');
+
+  // Register presence heartbeat (as GUI observer)
+  registerPresence();
+
+  // Start polling roster + todos
+  fetchRoster();
+  fetchTodos();
+  rosterTimer = setInterval(fetchRoster, 30_000);
+  todosTimer  = setInterval(fetchTodos, 15_000);
+  serverPollTimer = setInterval(pollServerStatus, 5_000);
+
+  // Connect SSE
+  connectSSE();
+
+  // Keyboard shortcut for compose (added once; teardownDashboard removes it)
+  const textEl = document.getElementById('compose-text');
+  if (textEl) {
+    textEl.removeEventListener('keydown', onComposeKeydown);
+    textEl.addEventListener('keydown', onComposeKeydown);
+  }
+}
+
+function teardownDashboard() {
+  clearInterval(rosterTimer);
+  clearInterval(todosTimer);
+  clearInterval(serverPollTimer);
+  clearInterval(presenceTimer);
+  presenceTimer = null;
+  if (usageTimer) { clearInterval(usageTimer); usageTimer = null; }
+  usageOpen = false;
+  const usagePanel = document.getElementById('usage-panel');
+  if (usagePanel) usagePanel.classList.remove('open');
+  if (sseConn) { sseConn.close(); sseConn = null; }
+  const textEl = document.getElementById('compose-text');
+  if (textEl) textEl.removeEventListener('keydown', onComposeKeydown);
+}
+
+// ── SSE connection ────────────────────────────────────────────────────────────
+function connectSSE() {
+  if (sseConn) sseConn.close();
+
+  const url = `${cfg.serverUrl}/events?token=${encodeURIComponent(cfg.token)}`;
+  try {
+    sseConn = new EventSource(url);
+  } catch (e) {
+    setConnStatus(false);
+    scheduleSSEReconnect();
+    return;
+  }
+
+  sseConn.onopen = () => {
+    sseRetries = 0;
+    setConnStatus(true);
+  };
+
+  sseConn.onmessage = e => {
+    try {
+      const msg = JSON.parse(e.data);
+      onNewMessage(msg);
+    } catch (_) {}
+  };
+
+  sseConn.onerror = () => {
+    setConnStatus(false);
+    sseConn.close();
+    sseConn = null;
+    scheduleSSEReconnect();
+  };
+}
+
+function scheduleSSEReconnect() {
+  const delay = Math.min(1000 * Math.pow(1.8, sseRetries) + Math.random() * 500, 30_000);
+  sseRetries++;
+  setTimeout(connectSSE, delay);
+}
+
+function setConnStatus(up) {
+  const pill  = document.getElementById('conn-pill');
+  const label = document.getElementById('conn-label');
+  if (!pill) return;
+  pill.className = 'conn-pill ' + (up ? 'live' : 'dead');
+  if (label) label.textContent = up ? 'live' : 'reconnecting…';
+}
+
+// ── Server status polling ─────────────────────────────────────────────────────
+async function pollServerStatus() {
+  const running = await invoke('server_running').catch(() => false);
+  const dot = document.getElementById('server-dot');
+  const startBtn = document.getElementById('btn-start-server');
+  const stopBtn  = document.getElementById('btn-stop-server');
+  if (!dot) return;
+  dot.className = 'server-dot ' + (running ? 'up' : '');
+  if (startBtn) startBtn.hidden = running;
+  if (stopBtn)  stopBtn.hidden  = !running;
+}
+
+async function doStartServer() {
+  try {
+    await invoke('start_server', {
+      serverUrl:  cfg.serverUrl,
+      token:      cfg.token,
+      projectDir: cfg.projectDir,
+    });
+    toast('Server started.', false);
+    pollServerStatus();
+    connectSSE();
+  } catch (e) {
+    toast('Server error: ' + e, true);
+  }
+}
+
+async function doStopServer() {
+  try {
+    await invoke('stop_server');
+    toast('Server stopped.', false);
+    pollServerStatus();
+  } catch (e) {
+    toast('Stop error: ' + e, true);
+  }
+}
+
+// ── Roster ────────────────────────────────────────────────────────────────────
+async function fetchRoster() {
+  try {
+    const res = await fetch(`${cfg.serverUrl}/roster`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderRoster(data);
+  } catch (_) {}
+}
+
+function renderRoster(workers) {
+  const list = document.getElementById('roster-list');
+  if (!list) return;
+  list.innerHTML = '';
+  if (!workers || workers.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'feed-empty feed-empty-sm';
+    empty.textContent = 'No workers online';
+    list.appendChild(empty);
+    return;
+  }
+  const now = Date.now();
+  workers.forEach(w => {
+    const lastSeen = new Date(w.last_seen).getTime();
+    const isOnline = (now - lastSeen) < 90_000; // 90s threshold
+    const colorIdx = getColor(w.instance_id);
+
+    const item = document.createElement('div');
+    item.className = 'roster-item';
+    item.title = w.role || '';
+
+    const dot = document.createElement('div');
+    dot.className = 'roster-dot' + (isOnline ? ' online' : '');
+    item.appendChild(dot);
+
+    const body = document.createElement('div');
+    body.className = 'roster-body';
+    const name = document.createElement('div');
+    name.className = 'roster-name';
+    name.style.color = COLORS[colorIdx];
+    name.textContent = w.instance_id;
+    body.appendChild(name);
+    if (w.role) {
+      const role = document.createElement('div');
+      role.className = 'roster-role';
+      role.textContent = w.role;
+      body.appendChild(role);
+    }
+    item.appendChild(body);
+
+    const count = document.createElement('span');
+    count.className = 'roster-count';
+    count.textContent = w.message_count || '';
+    item.appendChild(count);
+
+    list.appendChild(item);
+  });
+}
+
+// ── Todos ─────────────────────────────────────────────────────────────────────
+async function fetchTodos() {
+  if (!cfg.identity) return;
+  try {
+    const res = await fetch(`${cfg.serverUrl}/todos/${cfg.identity}`, {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    });
+    if (!res.ok) return;
+    const todos = await res.json();
+    renderTodos(todos);
+  } catch (_) {}
+}
+
+function renderTodos(todos) {
+  const list  = document.getElementById('todos-list');
+  const count = document.getElementById('todos-count');
+  if (!list) return;
+  if (count) count.textContent = todos.length;
+  list.innerHTML = '';
+  if (todos.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'todos-empty';
+    empty.textContent = 'No pending tasks';
+    list.appendChild(empty);
+    return;
+  }
+  todos.forEach(t => {
+    const div = document.createElement('div');
+    div.className = 'todo-item';
+    div.innerHTML = `
+      <div class="todo-by">from ${esc(t.assigned_by)} · ${timeAgo(t.created_at)}</div>
+      <div class="todo-desc">${esc(t.description)}</div>
+    `;
+    list.appendChild(div);
+  });
+}
+
+// ── Messages ──────────────────────────────────────────────────────────────────
+function onNewMessage(msg) {
+  // Avoid duplicates
+  if (allMessages.some(m => m.id === msg.id)) return;
+  allMessages.push(msg);
+
+  // Track mentions
+  if (cfg.identity && msg.recipient === cfg.identity && activeTab !== 'mentions') {
+    unreadMentions++;
+    updateMentionBadge();
+  }
+
+  const el = buildMessageEl(msg, true);
+  const feed = document.getElementById('feed');
+  if (!feed) return;
+
+  // Remove empty state
+  const empty = document.getElementById('feed-empty');
+  if (empty) empty.remove();
+
+  // Only show if matches current tab (must match rerenderFeed's filter exactly)
+  if (activeTab === 'mentions' && msg.recipient !== cfg.identity) {
+    return;
+  }
+
+  feed.appendChild(el);
+  feed.scrollTop = feed.scrollHeight;
+
+  // Update count
+  const countEl = document.getElementById('msg-count');
+  if (countEl) countEl.textContent = `${allMessages.length} msg${allMessages.length !== 1 ? 's' : ''}`;
+}
+
+function buildMessageEl(msg, isNew) {
+  const colorIdx = getColor(msg.sender);
+  const div = document.createElement('div');
+  div.className = 'msg' + (isNew ? ' is-new' : '');
+  div.innerHTML = `
+    <span class="msg-badge badge-${colorIdx}">${esc(msg.sender)}</span>
+    <div class="msg-meta">
+      <span class="msg-sender c${colorIdx}">${esc(msg.sender)}</span>
+      ${msg.recipient && msg.recipient !== 'all' ? `<span class="msg-to">→ ${esc(msg.recipient)}</span>` : '<span class="msg-to">→ all</span>'}
+      <span class="msg-time">${fmtTime(msg.timestamp)}</span>
+    </div>
+    <div class="msg-body">${esc(msg.content)}</div>
+  `;
+  return div;
+}
+
+function setTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.feed-tab').forEach(el => {
+    el.classList.toggle('active', el.id === 'tab-' + tab);
+  });
+  if (tab === 'mentions') {
+    unreadMentions = 0;
+    updateMentionBadge();
+  }
+  rerenderFeed();
+}
+
+function rerenderFeed() {
+  const feed = document.getElementById('feed');
+  if (!feed) return;
+  feed.innerHTML = '';
+  const msgs = activeTab === 'mentions'
+    ? allMessages.filter(m => m.recipient === cfg.identity)
+    : allMessages;
+  if (msgs.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'feed-empty';
+    empty.id = 'feed-empty';
+    empty.textContent = activeTab === 'mentions' ? 'No mentions yet.' : 'No messages yet.';
+    feed.appendChild(empty);
+    return;
+  }
+  msgs.forEach(m => feed.appendChild(buildMessageEl(m, false)));
+  feed.scrollTop = feed.scrollHeight;
+}
+
+function updateMentionBadge() {
+  const badge = document.getElementById('mention-badge');
+  if (!badge) return;
+  badge.hidden = unreadMentions === 0;
+  badge.textContent = unreadMentions;
+}
+
+// ── Compose ───────────────────────────────────────────────────────────────────
+// ── Slash commands ────────────────────────────────────────────────────────────
+const SLASH_CMDS = [
+  { cmd: 'r',   desc: 'Reply to last sender',  hint: '/r [text]'            },
+  { cmd: 'w',   desc: 'DM a worker',           hint: '/w <worker> [text]'   },
+  { cmd: 'all', desc: 'Message everyone',      hint: '/all [text]'          },
+];
+let slashMatches = [];
+let slashIdx = 0;
+
+// Find the most recent sender who addressed me (or anyone else as fallback).
+// Drives the `/r` shortcut. Uses `allMessages` which the SSE stream fills.
+function lastSenderForMe() {
+  const me = (cfg.identity || '').trim();
+  for (let i = allMessages.length - 1; i >= 0; i--) {
+    const m = allMessages[i];
+    if (m.sender !== me && (m.recipient === me || m.recipient === 'all')) return m.sender;
+  }
+  for (let i = allMessages.length - 1; i >= 0; i--) {
+    if (allMessages[i].sender !== me) return allMessages[i].sender;
+  }
+  return null;
+}
+
+function renderSlashList() {
+  const list = document.getElementById('slash-list');
+  if (!list) return;
+  if (!slashMatches.length) { list.hidden = true; list.innerHTML = ''; return; }
+  list.hidden = false;
+  list.innerHTML = '';
+  slashMatches.forEach((c, i) => {
+    const li = document.createElement('li');
+    li.className = 'slash-item';
+    li.setAttribute('role', 'option');
+    if (i === slashIdx) li.setAttribute('aria-selected', 'true');
+    li.dataset.cmd = c.cmd;
+
+    const cmdSpan = document.createElement('span');
+    cmdSpan.className = 'slash-cmd';
+    cmdSpan.textContent = '/' + c.cmd;
+    li.appendChild(cmdSpan);
+
+    const descSpan = document.createElement('span');
+    descSpan.className = 'slash-desc';
+    descSpan.textContent = c.desc;
+    li.appendChild(descSpan);
+
+    const hintSpan = document.createElement('span');
+    hintSpan.className = 'slash-hint';
+    hintSpan.textContent = c.hint;
+    li.appendChild(hintSpan);
+
+    list.appendChild(li);
+  });
+}
+
+function closeSlashList() {
+  slashMatches = [];
+  slashIdx = 0;
+  const list = document.getElementById('slash-list');
+  if (list) { list.hidden = true; list.innerHTML = ''; }
+}
+
+// Auto-expand when a slash command is picked from the palette or space-completed.
+function applySlash(cmd) {
+  const input = document.getElementById('compose-text');
+  if (!input) return;
+  closeSlashList();
+  if (cmd === 'r') {
+    const sender = lastSenderForMe();
+    if (sender) {
+      input.value = `@${sender} `;
+    } else {
+      input.value = '';
+      toast('No recent messages to reply to', true);
+    }
+  } else if (cmd === 'all') {
+    input.value = '@all ';
+  } else if (cmd === 'w') {
+    input.value = '@';
+  }
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+// Used at send time: `/r hello` → `@sender hello`. Returns null to abort the send.
+function expandSlashOnSend(text) {
+  if (!text.startsWith('/')) return text;
+  const spIdx = text.indexOf(' ');
+  const cmd   = spIdx === -1 ? text.slice(1) : text.slice(1, spIdx);
+  const rest  = spIdx === -1 ? '' : text.slice(spIdx + 1).trim();
+  if (cmd === 'r') {
+    const sender = lastSenderForMe();
+    if (!sender) { toast('No recent messages to reply to', true); return null; }
+    return rest ? `@${sender} ${rest}` : `@${sender} `;
+  }
+  if (cmd === 'all') return rest ? `@all ${rest}` : '@all ';
+  if (cmd === 'w') {
+    const parts = rest.split(/\s+/);
+    const worker = parts[0];
+    if (!worker) { toast('Usage: /w <worker> [message]', true); return null; }
+    const body = parts.slice(1).join(' ');
+    return body ? `@${worker} ${body}` : `@${worker} `;
+  }
+  return text; // unknown — let it go through as-is
+}
+
+function onComposeInput() {
+  const input = document.getElementById('compose-text');
+  if (!input) return;
+  const val = input.value;
+
+  // Show palette while typing `/cmd` with no space yet.
+  if (val.startsWith('/') && !val.includes(' ')) {
+    const q = val.slice(1).toLowerCase();
+    slashMatches = SLASH_CMDS.filter(c => c.cmd.startsWith(q));
+    slashIdx = 0;
+    renderSlashList();
+    return;
+  }
+  closeSlashList();
+
+  // Auto-expand once the user types a space after a recognized slash command.
+  if (val === '/r ')   { applySlash('r');   return; }
+  if (val === '/all ') { applySlash('all'); return; }
+  if (val === '/w ')   { applySlash('w');   return; }
+}
+
+function onComposeKeydown(e) {
+  // Slash palette navigation
+  if (slashMatches.length) {
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      applySlash(slashMatches[slashIdx].cmd);
+      return;
+    }
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      slashIdx = (slashIdx + 1) % slashMatches.length;
+      renderSlashList();
+      return;
+    }
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      slashIdx = (slashIdx - 1 + slashMatches.length) % slashMatches.length;
+      renderSlashList();
+      return;
+    }
+    if (e.key === 'Escape') { closeSlashList(); return; }
+  }
+
+  // Shift+Enter sends (original behavior)
+  if (e.key === 'Enter' && e.shiftKey) {
+    e.preventDefault();
+    doSendMessage();
+  }
+}
+
+async function doSendMessage() {
+  const fromEl = document.getElementById('compose-from');
+  const toEl   = document.getElementById('compose-to');
+  const textEl = document.getElementById('compose-text');
+  if (!fromEl || !toEl || !textEl) return;
+
+  const sender = fromEl.value.trim() || cfg.identity || 'gui';
+  let rawText  = textEl.value.trim();
+  if (!rawText) return;
+
+  // Expand slash commands at send time (e.g. `/r hi` → `@alice hi`).
+  if (rawText.startsWith('/')) {
+    const expanded = expandSlashOnSend(rawText);
+    if (expanded === null) return;
+    rawText = expanded.trim();
+  }
+
+  // If the message starts with @name, treat that as the recipient override.
+  let content = rawText;
+  let recipient = (toEl.value.trim() || 'all').replace(/^@/, '');
+  const mentionMatch = rawText.match(/^@(\S+)\s*(.*)$/s);
+  if (mentionMatch) {
+    recipient = mentionMatch[1];
+    content = mentionMatch[2];
+  }
+  if (!content) return;
+
+  try {
+    const res = await fetch(`${cfg.serverUrl}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization:  `Bearer ${cfg.token}`,
+      },
+      body: JSON.stringify({ sender, recipient, content, refs: [] }),
+    });
+    if (res.ok) {
+      textEl.value = '';
+      textEl.focus();
+    } else {
+      toast('Send failed: ' + res.status, true);
+    }
+  } catch (e) {
+    toast('Send error: ' + e, true);
+  }
+}
+
+// ── Worker lifecycle ──────────────────────────────────────────────────────────
+async function doStartWorkers() {
+  const envs = [
+    ['COLLAB_TOKEN', cfg.token],
+    ['COLLAB_SERVER', cfg.serverUrl],
+    ['COLLAB_INSTANCE', cfg.identity || 'gui'],
+  ];
+  try {
+    await invoke('run_command', {
+      program: 'collab',
+      args:    ['start', 'all'],
+      cwd:     cfg.projectDir || undefined,
+      envs,
+    });
+    toast('Workers starting…', false);
+    setTimeout(fetchRoster, 2000);
+  } catch (e) {
+    toast('Error starting workers: ' + e, true);
+  }
+}
+
+async function doStopWorkers() {
+  const envs = [
+    ['COLLAB_TOKEN', cfg.token],
+    ['COLLAB_SERVER', cfg.serverUrl],
+    ['COLLAB_INSTANCE', cfg.identity || 'gui'],
+  ];
+  try {
+    await invoke('run_command', {
+      program: 'collab',
+      args:    ['stop', 'all'],
+      cwd:     cfg.projectDir || undefined,
+      envs,
+    });
+    toast('Workers stopping…', false);
+  } catch (e) {
+    toast('Error: ' + e, true);
+  }
+}
+
+async function doBroadcastStop() {
+  if (!confirm('Send a stop signal to all workers?')) return;
+  const sender = cfg.identity || 'gui';
+  try {
+    await fetch(`${cfg.serverUrl}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization:  `Bearer ${cfg.token}`,
+      },
+      body: JSON.stringify({
+        sender,
+        recipient: 'all',
+        content: 'STOP — shutting down. Please finish your current task and exit.',
+        refs: [],
+      }),
+    });
+    toast('Stop signal broadcast.', false);
+  } catch (e) {
+    toast('Error: ' + e, true);
+  }
+}
+
+// ── Presence heartbeat ────────────────────────────────────────────────────────
+async function registerPresence() {
+  if (!cfg.identity) return;
+  const identity = cfg.identity.replace(/^@/, '');
+  async function heartbeat() {
+    try {
+      await fetch(`${cfg.serverUrl}/presence/${identity}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization:  `Bearer ${cfg.token}`,
+        },
+        body: JSON.stringify({ role: 'GUI observer' }),
+      });
+    } catch (_) {}
+  }
+  heartbeat();
+  presenceTimer = setInterval(heartbeat, 30_000);
+}
+
+// ── Panel toggles ─────────────────────────────────────────────────────────────
+function toggleServerLog() {
+  serverLogOpen = !serverLogOpen;
+  const panel = document.getElementById('server-log-panel');
+  if (panel) panel.classList.toggle('open', serverLogOpen);
+}
+
+function toggleTodos() {
+  todosVisible = !todosVisible;
+  const panel = document.getElementById('todos-panel');
+  if (panel) panel.classList.toggle('collapsed', !todosVisible);
+}
+
+// ── Usage panel ───────────────────────────────────────────────────────────────
+function toggleUsage() {
+  usageOpen = !usageOpen;
+  const panel = document.getElementById('usage-panel');
+  if (panel) panel.classList.toggle('open', usageOpen);
+  if (usageOpen) {
+    fetchUsage();
+    usageTimer = setInterval(fetchUsage, 10_000);
+  } else {
+    clearInterval(usageTimer);
+    usageTimer = null;
+  }
+}
+
+async function fetchUsage() {
+  if (!cfg.projectDir) { renderUsage([], null); return; }
+  const logPath = cfg.projectDir + '/.collab/usage.log';
+  let text = '';
+  try {
+    const exists = await invoke('path_exists', { path: logPath });
+    if (!exists) { renderUsage([], null); return; }
+    text = await invoke('read_file', { path: logPath });
+  } catch (e) {
+    renderUsage([], null);
+    return;
+  }
+  const rows = parseUsageLog(text);
+  renderUsage(rows, text);
+}
+
+// TSV columns: ts \t worker \t duration_s \t in_tokens \t out_tokens \t cli \t tier \t cost
+function parseUsageLog(text) {
+  const out = [];
+  for (const line of text.split('\n')) {
+    if (!line || line.length > 1024) continue;
+    const c = line.split('\t');
+    if (c.length < 5) continue;
+    const worker = c[1];
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(worker)) continue;
+    out.push({
+      ts:       c[0],
+      worker,
+      duration: parseInt(c[2], 10) || 0,
+      inTok:    parseInt(c[3], 10) || 0,
+      outTok:   parseInt(c[4], 10) || 0,
+      cli:      c[5] || '?',
+      tier:     c[6] || 'full',
+      cost:     parseFloat(c[7] || '0') || 0,
+    });
+  }
+  return out;
+}
+
+function renderUsage(rows, _rawText) {
+  const inner = document.getElementById('usage-inner');
+  const totalEl = document.getElementById('usage-total');
+  if (!inner) return;
+  inner.innerHTML = '';
+
+  if (!rows.length) {
+    const empty = document.createElement('div');
+    empty.className = 'usage-empty';
+    empty.textContent = cfg.projectDir
+      ? 'No usage recorded yet. Workers append here after each turn.'
+      : 'No project directory set.';
+    inner.appendChild(empty);
+    if (totalEl) totalEl.textContent = '—';
+    return;
+  }
+
+  let totalIn = 0, totalOut = 0, totalCost = 0, totalDur = 0;
+  for (const r of rows) {
+    totalIn   += r.inTok;
+    totalOut  += r.outTok;
+    totalCost += r.cost;
+    totalDur  += r.duration;
+  }
+  if (totalEl) {
+    totalEl.textContent =
+      `${rows.length} call${rows.length !== 1 ? 's' : ''} · ` +
+      `${fmtTokens(totalIn + totalOut)} toks · ` +
+      `${fmtDuration(totalDur)} · ` +
+      (totalCost > 0 ? `$${totalCost.toFixed(4)}` : 'no cost data');
+  }
+
+  // Newest last so the viewport scrolls to the latest entry naturally.
+  rows.slice(-200).forEach(r => {
+    const row = document.createElement('div');
+    row.className = 'usage-row';
+
+    const t = document.createElement('span');
+    t.className = 'usage-time';
+    t.textContent = fmtTime(r.ts);
+    row.appendChild(t);
+
+    const w = document.createElement('span');
+    w.className = 'usage-worker';
+    w.textContent = r.worker;
+    w.style.color = COLORS[getColor(r.worker)];
+    row.appendChild(w);
+
+    const toks = document.createElement('span');
+    toks.className = 'usage-toks';
+    toks.textContent = `${fmtTokens(r.inTok)} in · ${fmtTokens(r.outTok)} out`;
+    row.appendChild(toks);
+
+    const dur = document.createElement('span');
+    dur.className = 'usage-dur';
+    dur.textContent = fmtDuration(r.duration);
+    row.appendChild(dur);
+
+    const cost = document.createElement('span');
+    cost.className = 'usage-cost' + (r.cost > 0 ? '' : ' zero');
+    cost.textContent = r.cost > 0 ? `$${r.cost.toFixed(4)}` : '—';
+    row.appendChild(cost);
+
+    inner.appendChild(row);
+  });
+  inner.scrollTop = inner.scrollHeight;
+}
+
+function fmtTokens(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000)     return (n / 1_000).toFixed(1) + 'k';
+  return String(n);
+}
+
+function fmtDuration(secs) {
+  if (secs < 60) return secs + 's';
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}m${s.toString().padStart(2, '0')}s`;
+}
+
+function appendServerLog(line, isErr) {
+  const inner = document.getElementById('server-log-inner');
+  if (!inner) return;
+  const span = document.createElement('span');
+  span.className = isErr ? 'log-err' : '';
+  span.textContent = line + '\n';
+  inner.appendChild(span);
+  // Keep max 500 lines
+  while (inner.children.length > 500) inner.removeChild(inner.firstChild);
+  inner.scrollTop = inner.scrollHeight;
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+const COLORS = ['#38bdf8','#fb7185','#34d399','#a78bfa','#e879f9','#2dd4bf'];
+
+function getColor(name) {
+  if (senderColors[name] === undefined) {
+    senderColors[name] = colorCounter % COLORS.length;
+    colorCounter++;
+  }
+  return senderColors[name];
+}
+
+function esc(s) {
+  return String(s || '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function fmtTime(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  } catch (_) { return ''; }
+}
+
+function timeAgo(iso) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60)   return 'just now';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function toast(msg, isErr) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (isErr ? 'err' : 'ok');
+  el.textContent = msg;
+  document.getElementById('toasts').appendChild(el);
+  setTimeout(() => el.remove(), 4000);
+}
+
+// Initial todos panel state: collapsed
+document.getElementById('todos-panel').classList.add('collapsed');
+
+// ── Test hooks ───────────────────────────────────────────────────────────────
+// Playwright tests need to read/write wizard state and call internal
+// functions, but `let cfg` / `let workers` don't attach to window in a
+// classic <script>. Expose a small bridge instead of converting declarations
+// to `var`. Safe to ship — it only reads/writes state that already exists.
+window.__wizard = {
+  get cfg()        { return cfg; },
+  set cfg(v)       { Object.assign(cfg, v); },
+  get workers()    { return workers; },
+  set workers(v)   { workers = v; },
+  parseWorkersYaml,
+  buildWorkersYaml,
+  loadExistingProject,
+  syncWorkersFromDom,
+  addWorker,
+  removeWorker,
+  step1Next,
+  step2Next,
+  step3Next,
+  doLaunch,
+};
+
+// ── Event wiring (replaces former inline on*= handlers) ─────────────────────
+// CSP strict mode forbids inline event attributes, so every button below was
+// given an id/data-attr in index.html and is bound here instead.
+(function wireEvents() {
+  const on = (id, ev, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(ev, fn);
+  };
+
+  // Wizard — step navigation + actions
+  on('btn-gen-token',   'click', doGenerateToken);
+  on('btn-step1-next',  'click', step1Next);
+  on('btn-browse',      'click', doBrowse);
+  on('btn-step2-next',  'click', step2Next);
+  on('btn-step3-next',  'click', step3Next);
+  on('btn-add-worker',  'click', addWorker);
+  on('launch-btn',      'click', doLaunch);
+  on('open-dash-btn',   'click', toDashboard);
+
+  // Generic "goStep" back buttons — any element with data-goto="N"
+  document.querySelectorAll('[data-goto]').forEach(el => {
+    el.addEventListener('click', () => goStep(parseInt(el.dataset.goto, 10)));
+  });
+
+  // Step 3 tool dropdown
+  const toolEl = document.getElementById('s3-tool');
+  if (toolEl) toolEl.addEventListener('change', onToolChange);
+
+  // Dashboard — topbar
+  on('btn-start-server',  'click', doStartServer);
+  on('btn-stop-server',   'click', doStopServer);
+  on('btn-start-workers', 'click', doStartWorkers);
+  on('btn-stop-workers',  'click', doStopWorkers);
+  on('btn-toggle-log',    'click', toggleServerLog);
+  on('btn-toggle-usage',  'click', toggleUsage);
+  on('btn-toggle-todos',  'click', toggleTodos);
+  on('btn-to-wizard',     'click', goToWizard);
+
+  // Dashboard — roster + feed + compose
+  on('btn-broadcast-stop', 'click', doBroadcastStop);
+  on('btn-send',           'click', doSendMessage);
+
+  // Feed tabs — data-tab attribute
+  document.querySelectorAll('[data-tab]').forEach(el => {
+    el.addEventListener('click', () => setTab(el.dataset.tab));
+  });
+
+  // Compose — slash command palette
+  const textEl = document.getElementById('compose-text');
+  if (textEl) textEl.addEventListener('input', onComposeInput);
+  const slashList = document.getElementById('slash-list');
+  if (slashList) {
+    slashList.addEventListener('mousedown', e => {
+      const item = e.target.closest('.slash-item');
+      if (item) { e.preventDefault(); applySlash(item.dataset.cmd); }
+    });
+  }
+  if (textEl) {
+    textEl.addEventListener('blur', () => {
+      // Delay so mousedown on a palette item can fire first.
+      setTimeout(closeSlashList, 150);
+    });
+  }
+})();

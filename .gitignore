@@ -16,3 +16,22 @@ tmp
 node_modules/
 .worker-state.json
 target
+
+# Runtime / local state
+.collab/
+collab.db
+collab.db-shm
+collab.db-wal
+workers.yaml
+workers/
+
+# Tooling caches
+.playwright-mcp/
+test-results/
+
+# Generated docs
+collab-cli/doc/
+
+# Tauri build artifacts (staged sidecar binaries + generated files)
+collab-gui/src-tauri/binaries/
+collab-gui/src-tauri/gen/

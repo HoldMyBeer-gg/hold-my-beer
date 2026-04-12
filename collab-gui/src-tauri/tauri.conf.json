@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2.json",
+  "productName": "Hold My Beer",
+  "version": "0.1.0",
+  "identifier": "dev.holdmybeer.gui",
+  "build": {
+    "frontendDist": "../public",
+    "devUrl": "http://localhost:1421",
+    "beforeDevCommand": "pnpm run serve",
+    "beforeBuildCommand": "PROFILE=release ./src-tauri/stage-sidecars.sh"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Hold My Beer",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 920,
+        "minHeight": 620,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; connect-src 'self' ipc: http://ipc.localhost http://localhost:* http://127.0.0.1:* https://fonts.googleapis.com https://fonts.gstatic.com; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; script-src 'self'; img-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "externalBin": [
+      "binaries/collab",
+      "binaries/collab-server"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}

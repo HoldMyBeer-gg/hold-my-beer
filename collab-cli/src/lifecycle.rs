@@ -1,10 +1,24 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Child};
+use std::process::{Command, Child, Stdio};
 use std::fs;
 use std::collections::HashMap;
 use chrono::Utc;
+
+/// Detach a command's stdio from the caller's stdin/stdout/stderr.
+///
+/// A worker launched by `collab start` is a long-lived daemon. If it
+/// inherits the caller's pipes, they stay open as long as the worker lives,
+/// so any process reading the caller's stdout blocks on EOF forever — which
+/// is exactly how the GUI's "Starting workers" step wedged.
+///
+/// The regression test lives at `tests/worker_stdio_isolation.rs`.
+pub fn configure_detached_stdio(cmd: &mut Command) {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+}
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -111,6 +125,11 @@ pub fn spawn_worker(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+
+    // Detach stdio so the worker (and any grandchildren it spawns) doesn't
+    // keep the caller's stdout/stderr pipes open — that's what hung the
+    // GUI's "Starting workers" step for minutes on end.
+    configure_detached_stdio(&mut cmd);
 
     // Spawn in background
     let child = cmd.spawn()

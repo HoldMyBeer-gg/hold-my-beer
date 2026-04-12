@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hold My Beer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="app.css">
+</head>
+
+<body>
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     WIZARD
+════════════════════════════════════════════════════════════════════════ -->
+<div id="wizard">
+  <!-- Progress dots -->
+  <div class="wiz-progress" id="wiz-progress" role="progressbar" aria-label="Setup progress">
+    <div class="wiz-dot active" aria-label="Step 1"></div>
+    <div class="wiz-dot" aria-label="Step 2"></div>
+    <div class="wiz-dot" aria-label="Step 3"></div>
+    <div class="wiz-dot" aria-label="Step 4"></div>
+  </div>
+
+  <div class="wiz-steps-wrap">
+
+      <!-- ── Step 1: Token + identity ─────────────────────────────────── -->
+      <div class="step active" id="step-1">
+        <div class="step-icon">🍺</div>
+        <h1 class="step-title">Hold My Beer</h1>
+        <p class="step-sub">Your AI team's shared switchboard. Let's get set up in two minutes.</p>
+
+        <div class="step-fields">
+          <div class="field">
+            <label for="s1-token">Server Token</label>
+            <div class="token-row">
+              <input id="s1-token" class="inp inp-mono" type="password" placeholder="your-secret-token" autocomplete="off" spellcheck="false">
+              <button class="btn btn-ghost btn-sm" id="btn-gen-token" title="Generate a secure random token">Generate</button>
+            </div>
+            <div class="hint-box u-mt-4">Authenticates all agents. Will be saved to <code>~/.collab.toml</code>.</div>
+          </div>
+
+          <div class="field">
+            <label for="s1-url">Server URL</label>
+            <input id="s1-url" class="inp inp-mono" type="text" value="http://localhost:8000">
+          </div>
+
+          <div class="field">
+            <label for="s1-identity">Your name in chat</label>
+            <input id="s1-identity" class="inp" type="text" placeholder="e.g. human, lead, observer" autocomplete="off">
+            <div class="hint-box">How you appear in the team roster when you send messages.</div>
+          </div>
+        </div>
+
+        <div class="step-nav">
+          <button class="btn btn-primary" id="btn-step1-next">
+            Next <span>→</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- ── Step 2: Project directory ────────────────────────────────── -->
+      <div class="step future" id="step-2">
+        <div class="step-icon">📁</div>
+        <h2 class="step-title">Project Directory</h2>
+        <p class="step-sub">Choose the folder where your workers will be created. Worker environments and AGENT.md files live here.</p>
+
+        <div class="step-fields">
+          <div class="field">
+            <label>Project folder</label>
+            <div class="dir-row">
+              <input id="s2-dir" class="inp" type="text" readonly placeholder="Click Browse to choose a folder…">
+              <button class="btn btn-ghost" id="btn-browse">Browse</button>
+            </div>
+          </div>
+
+          <div class="hint-box">
+            Hold My Beer will create <code>workers/</code> and <code>.collab/</code> in this directory.
+            Each worker gets its own AGENT.md with instructions. The <code>collab.db</code> database also lives here.
+          </div>
+        </div>
+
+        <div class="step-nav">
+          <button class="btn btn-ghost" data-goto="1">← Back</button>
+          <button class="btn btn-primary" id="btn-step2-next">Next →</button>
+        </div>
+      </div>
+
+      <!-- ── Step 3: Workers ───────────────────────────────────────────── -->
+      <div class="step future" id="step-3">
+        <div class="step-icon">🤖</div>
+        <h2 class="step-title">Build Your Team</h2>
+        <p class="step-sub">Add the AI workers that will collaborate. Each gets a name and a role that defines what they do.</p>
+
+        <div class="step-fields">
+          <div class="field">
+            <label>Default AI tool</label>
+            <select id="s3-tool" class="tool-select">
+              <option value="claude">Claude (claude CLI)</option>
+              <option value="cursor">Cursor</option>
+              <option value="ollama">Ollama (llama3.1)</option>
+              <option value="codex">OpenAI Codex</option>
+              <option value="custom">Custom…</option>
+            </select>
+          </div>
+
+          <div class="field" id="custom-template-field" hidden>
+            <label>CLI template</label>
+            <input id="s3-custom-tmpl" class="inp inp-mono" type="text" placeholder='my-ai -p {prompt} --model {model}'>
+            <div class="hint-box">Use <code>{prompt}</code>, <code>{model}</code>, <code>{workdir}</code> as placeholders.</div>
+          </div>
+
+          <div class="field">
+            <label>Model</label>
+            <input id="s3-model" class="inp inp-mono" type="text" value="haiku" placeholder="haiku, sonnet, opus…">
+          </div>
+
+          <div id="workers-list"></div>
+
+          <button class="btn btn-ghost btn-sm u-self-start" id="btn-add-worker">
+            + Add worker
+          </button>
+        </div>
+
+        <div class="step-nav">
+          <button class="btn btn-ghost" data-goto="2">← Back</button>
+          <button class="btn btn-primary" id="btn-step3-next">Next →</button>
+        </div>
+      </div>
+
+      <!-- ── Step 4: Launch ────────────────────────────────────────────── -->
+      <div class="step future" id="step-4">
+        <div class="step-icon">🚀</div>
+        <h2 class="step-title">Launching</h2>
+        <p class="step-sub">Setting up your team now. This takes about 10 seconds.</p>
+
+        <div class="launch-steps" id="launch-steps">
+          <div class="launch-item" id="li-config">
+            <span class="li-icon">⏳</span>
+            <span class="li-label">Writing workers.yaml</span>
+            <span class="li-detail"></span>
+          </div>
+          <div class="launch-item" id="li-server">
+            <span class="li-icon">⏳</span>
+            <span class="li-label">Starting collab-server</span>
+            <span class="li-detail"></span>
+          </div>
+          <div class="launch-item" id="li-init">
+            <span class="li-icon">⏳</span>
+            <span class="li-label">Initializing worker environments</span>
+            <span class="li-detail"></span>
+          </div>
+          <div class="launch-item" id="li-workers">
+            <span class="li-icon">⏳</span>
+            <span class="li-label">Starting workers</span>
+            <span class="li-detail"></span>
+          </div>
+        </div>
+
+        <div class="launch-log" id="launch-log" aria-live="polite" aria-label="Setup output log"></div>
+
+        <div class="step-nav">
+          <button class="btn btn-ghost" id="back-from-4" data-goto="3">← Back</button>
+          <button class="btn btn-primary" id="launch-btn">🚀 Launch Team</button>
+          <button class="btn btn-primary" id="open-dash-btn" hidden>Open Dashboard →</button>
+        </div>
+      </div>
+
+  </div><!-- .wiz-steps-wrap -->
+</div><!-- #wizard -->
+
+
+<!-- ════════════════════════════════════════════════════════════════════════
+     DASHBOARD
+════════════════════════════════════════════════════════════════════════ -->
+<div id="dashboard" hidden>
+
+  <!-- Topbar -->
+  <div class="topbar">
+    <span class="logo">🍺 Hold My Beer</span>
+    <div class="tdiv"></div>
+
+    <div class="server-badge">
+      <div class="server-dot" id="server-dot" title="Server status"></div>
+      <span class="server-url" id="server-url-badge">localhost:8000</span>
+    </div>
+
+    <div class="topbar-spacer"></div>
+
+    <div class="topbar-actions">
+      <button class="btn btn-ghost btn-sm" id="btn-start-server">Start Server</button>
+      <button class="btn btn-ghost btn-sm" id="btn-stop-server" hidden>Stop Server</button>
+      <button class="btn btn-ghost btn-sm" id="btn-start-workers">Start Workers</button>
+      <button class="btn btn-ghost btn-sm" id="btn-stop-workers">Stop All</button>
+      <div class="tdiv"></div>
+      <button class="btn btn-ghost btn-sm" id="btn-toggle-log" title="Toggle server log">Logs</button>
+      <button class="btn btn-ghost btn-sm" id="btn-toggle-usage" title="Toggle token usage panel">Usage</button>
+      <button class="btn btn-ghost btn-sm" id="btn-toggle-todos" title="Toggle todos panel">Todos</button>
+      <button class="btn btn-ghost btn-sm" id="btn-to-wizard" title="Setup">⚙</button>
+      <div class="conn-pill" id="conn-pill" title="SSE stream status">
+        <div class="conn-dot2"></div>
+        <span id="conn-label">connecting…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server log (collapsible) -->
+  <div id="server-log-panel">
+    <div id="server-log-inner" aria-live="polite" aria-label="Server log output"></div>
+  </div>
+
+  <!-- Token usage (collapsible) -->
+  <div id="usage-panel">
+    <div class="usage-header">
+      <span>Token usage</span>
+      <span class="usage-total" id="usage-total">—</span>
+      <div class="feed-spacer"></div>
+      <span class="usage-hint">worker · tokens · duration · cost</span>
+    </div>
+    <div id="usage-inner" aria-live="polite" aria-label="Token usage log"></div>
+  </div>
+
+  <!-- Main layout -->
+  <div class="layout">
+
+    <!-- Roster sidebar -->
+    <aside class="roster" aria-label="Team roster">
+      <div class="roster-header">Team</div>
+      <div class="roster-list" id="roster-list" aria-live="polite">
+        <div class="feed-empty u-h-80">No workers yet</div>
+      </div>
+      <div class="roster-footer">
+        <button class="btn btn-danger btn-sm u-full-w" id="btn-broadcast-stop">
+          ■ Stop All Workers
+        </button>
+      </div>
+    </aside>
+
+    <!-- Feed -->
+    <div class="feed-wrap">
+      <div class="feed-header">
+        <button class="feed-tab active" id="tab-all" data-tab="all">All</button>
+        <button class="feed-tab" id="tab-mentions" data-tab="mentions">
+          Mentions <span id="mention-badge" class="mention-pill" hidden></span>
+        </button>
+        <div class="feed-spacer"></div>
+        <span class="msg-count" id="msg-count"></span>
+      </div>
+
+      <div class="feed" id="feed" aria-live="polite" aria-label="Message feed">
+        <div class="feed-empty" id="feed-empty">No messages yet — start the server and send one!</div>
+      </div>
+
+      <!-- Compose -->
+      <div class="compose">
+        <div class="compose-meta">
+          <span>From:</span>
+          <input id="compose-from" class="inp" type="text" placeholder="your-name" title="Your identity in chat">
+          <span class="u-ml-4">To:</span>
+          <input id="compose-to" class="inp" type="text" value="all" title="Recipient name or 'all' to broadcast">
+        </div>
+        <div class="compose-row">
+          <textarea id="compose-text" class="inp" placeholder="Type a message… (Shift+Enter to send, / for commands)" rows="2"></textarea>
+          <button class="btn btn-primary u-self-end" id="btn-send">Send</button>
+          <ul id="slash-list" hidden role="listbox" aria-label="Command suggestions"></ul>
+        </div>
+      </div>
+    </div>
+
+    <!-- Todos panel -->
+    <div class="todos-panel" id="todos-panel">
+      <div class="todos-header">
+        Todos
+        <span class="todos-count" id="todos-count">0</span>
+      </div>
+      <div class="todos-list" id="todos-list" aria-live="polite" aria-label="Task list">
+        <div class="todos-empty">No pending tasks</div>
+      </div>
+    </div>
+
+  </div><!-- .layout -->
+</div><!-- #dashboard -->
+
+<!-- Toasts -->
+<div id="toasts" aria-live="assertive"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
