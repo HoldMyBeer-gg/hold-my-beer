@@ -277,12 +277,16 @@ test.describe('addWorker / removeWorker preserve in-progress edits', () => {
 // ─── doLaunch does not silently overwrite an existing workers.yaml ────────────
 
 test.describe('doLaunch overwrite guard', () => {
+  // Must exactly match the bytes that buildWorkersYaml() emits — any drift
+  // and the doLaunch overwrite-guard round-trip test will incorrectly report
+  // a change and trigger a write. buildWorkersYaml quotes every scalar value
+  // (YAML-injection hardening, commit 3ae56ee).
   const existingYaml = [
-    'server: http://localhost:8000',
+    'server: "http://localhost:8000"',
     'cli_template: "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"',
-    'model: haiku',
+    'model: "haiku"',
     'output_dir: ./workers',
-    'codebase_path: /tmp/proj',
+    'codebase_path: "/tmp/proj"',
     'workers:',
     '  - name: alpha',
     '    role: "Alpha role"',
