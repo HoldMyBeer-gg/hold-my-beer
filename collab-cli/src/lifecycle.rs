@@ -23,6 +23,86 @@ pub fn configure_detached_stdio(cmd: &mut Command) {
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+
+#[cfg(windows)]
+unsafe extern "system" {
+    fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut core::ffi::c_void;
+    fn TerminateProcess(hProcess: *mut core::ffi::c_void, uExitCode: u32) -> i32;
+    fn GetExitCodeProcess(hProcess: *mut core::ffi::c_void, lpExitCode: *mut u32) -> i32;
+    fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> *mut core::ffi::c_void;
+    fn Process32First(hSnapshot: *mut core::ffi::c_void, lppe: *mut ProcessEntry32) -> i32;
+    fn Process32Next(hSnapshot: *mut core::ffi::c_void, lppe: *mut ProcessEntry32) -> i32;
+    fn CloseHandle(hObject: *mut core::ffi::c_void) -> i32;
+    fn GetStdHandle(nStdHandle: u32) -> *mut core::ffi::c_void;
+    fn SetHandleInformation(hObject: *mut core::ffi::c_void, dwMask: u32, dwFlags: u32) -> i32;
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct ProcessEntry32 {
+    dw_size: u32,
+    cnt_usage: u32,
+    th32_process_id: u32,
+    th32_default_heap_id: usize,
+    th32_module_id: u32,
+    cnt_threads: u32,
+    th32_parent_process_id: u32,
+    pc_pri_class_base: i32,
+    dw_flags: u32,
+    sz_exe_file: [u8; 260],
+}
+
+/// RAII guard that temporarily marks the process's stdin/stdout/stderr handles
+/// as non-inheritable. On drop, the original flags are restored.
+///
+/// This prevents long-lived worker children from inheriting the pipe handles
+/// that Tauri's sidecar API created — the root cause of the GUI hanging after
+/// `collab start all` on Windows.
+#[cfg(windows)]
+struct StdioInheritGuard {
+    handles: Vec<(*mut core::ffi::c_void, u32)>, // (handle, original HANDLE_FLAG_INHERIT bit)
+}
+
+#[cfg(windows)]
+impl StdioInheritGuard {
+    fn new() -> Self {
+        const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;   // (DWORD)-10
+        const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;   // (DWORD)-11
+        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;    // (DWORD)-12
+        const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+        const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1_isize as *mut _;
+
+        let mut handles = Vec::new();
+        for &id in &[STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            unsafe {
+                let h = GetStdHandle(id);
+                if !h.is_null() && h != INVALID_HANDLE_VALUE {
+                    // Save original inherit flag (we'll restore it on drop)
+                    handles.push((h, HANDLE_FLAG_INHERIT));
+                    // Clear the inherit flag
+                    SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
+        Self { handles }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for StdioInheritGuard {
+    fn drop(&mut self) {
+        const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
+        for &(h, original) in &self.handles {
+            unsafe {
+                // Restore: set HANDLE_FLAG_INHERIT back to its original value
+                SetHandleInformation(h, HANDLE_FLAG_INHERIT, original);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WorkerState {
     pub pid: u32,
@@ -145,6 +225,17 @@ pub fn spawn_worker(
     // GUI's "Starting workers" step for minutes on end.
     configure_detached_stdio(&mut cmd);
 
+    // On Windows, Rust's Command always passes bInheritHandles=TRUE to
+    // CreateProcessW. Even with Stdio::null(), ALL inheritable handles in
+    // this process are copied into the child — including the pipe handles
+    // that Tauri's sidecar API gave us. The workers keep those pipe copies
+    // open, so Tauri never sees EOF and the GUI hangs.
+    //
+    // Fix: temporarily mark our stdio handles as non-inheritable before
+    // spawning, then restore them afterward.
+    #[cfg(windows)]
+    let _guard = StdioInheritGuard::new();
+
     // Spawn in background
     let child = cmd.spawn()
         .map_err(|e| anyhow!("Failed to spawn collab worker for '{}': {}", name, e))?;
@@ -224,10 +315,23 @@ pub fn process_exists(pid: u32) -> bool {
             libc::kill(pid as i32, 0) == 0
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        // Fallback: assume process exists (safer than killing wrong PID)
-        true
+        use std::os::windows::io::FromRawHandle;
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let h = std::os::windows::io::OwnedHandle::from_raw_handle(handle);
+            let mut exit_code: u32 = 0;
+            if GetExitCodeProcess(h.as_raw_handle(), &mut exit_code) == 0 {
+                return false;
+            }
+            exit_code == STILL_ACTIVE
+        }
     }
 }
 
@@ -284,8 +388,91 @@ pub fn kill_process(pid: u32, name: &str) -> Result<()> {
         }
     }
 
+    #[cfg(windows)]
+    {
+        // Kill the entire process tree: collect all descendants, then terminate leaf-first
+        let tree = collect_process_tree(pid);
+        // Terminate in reverse (children before parents) for clean teardown
+        for &child_pid in tree.iter().rev() {
+            terminate_pid(child_pid);
+        }
+        // Always terminate the root process itself
+        terminate_pid(pid);
+
+        // Wait up to 3s for everything to actually exit
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if !process_exists(pid) {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+    }
+
     println!("✓ Stopped worker {} (PID {})", name, pid);
     Ok(())
+}
+
+/// Walk the process tree rooted at `root_pid` and return all descendant PIDs.
+#[cfg(windows)]
+fn collect_process_tree(root_pid: u32) -> Vec<u32> {
+    let mut descendants = Vec::new();
+    let mut queue = vec![root_pid];
+
+    while let Some(parent) = queue.pop() {
+        for child in children_of(parent) {
+            descendants.push(child);
+            queue.push(child);
+        }
+    }
+    descendants
+}
+
+/// Return immediate child PIDs of `parent_pid` using a toolhelp snapshot.
+#[cfg(windows)]
+fn children_of(parent_pid: u32) -> Vec<u32> {
+    const TH32CS_SNAPPROCESS: u32 = 0x00000002;
+    const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1_isize as *mut _;
+    let mut children = Vec::new();
+
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap == INVALID_HANDLE_VALUE || snap.is_null() {
+            return children;
+        }
+
+        let mut entry: ProcessEntry32 = std::mem::zeroed();
+        entry.dw_size = std::mem::size_of::<ProcessEntry32>() as u32;
+
+        if Process32First(snap, &mut entry) != 0 {
+            loop {
+                if entry.th32_parent_process_id == parent_pid {
+                    children.push(entry.th32_process_id);
+                }
+                if Process32Next(snap, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snap);
+    }
+    children
+}
+
+/// Terminate a single process by PID. Best-effort — ignores errors (process may have already exited).
+#[cfg(windows)]
+fn terminate_pid(pid: u32) {
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
+        }
+    }
 }
 
 /// Remove worker from PID tracking file
