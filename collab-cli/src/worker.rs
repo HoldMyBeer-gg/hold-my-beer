@@ -468,12 +468,24 @@ impl WorkerHarness {
                         Err(e) => self.log_error(&format!("Failed to fetch pending messages: {}", e)),
                     }
 
-                    // Auto-kick: send boot message AFTER SSE is connected (only once)
+                    // Auto-kick: queue boot message directly (only once).
+                    // We used to post this as a self-message through the server,
+                    // but the queue processor strips all self-messages (line 308),
+                    // so the boot kick was silently discarded — workers sat idle
+                    // until an external message arrived.
                     if !booted {
                         booted = true;
-                        if let Err(e) = self.client.add_message(&self.instance_id, "Session start — welcome back. Check your pending tasks and pick up where you left off. Set continue:true to keep working through your task list, or continue:false when you're blocked or done.", None).await {
-                            self.log_error(&format!("Failed to send boot message: {}", e));
-                        }
+                        let boot_msg = Message {
+                            sender: "system".to_string(),
+                            recipient: self.instance_id.clone(),
+                            content: "Session start — welcome back. Check your pending tasks and pick up where you left off. Set continue:true to keep working through your task list, or continue:false when you're blocked or done.".to_string(),
+                            hash: String::new(),
+                            timestamp: chrono::Utc::now(),
+                        };
+                        let mut queue = self.message_queue.lock().await;
+                        queue.push(boot_msg);
+                        *self.first_message_time.lock().await = Some(Instant::now());
+                        self.log("queued boot message");
                     }
 
                     let mut buffer = String::new();
@@ -823,12 +835,13 @@ Do NOT use `collab send`, `collab todo add`, or `collab broadcast` — the harne
                 .map(|t| t.to.trim_start_matches('@').to_string())
                 .collect();
 
-            // Send response once per unique sender (skip self and delegate targets)
+            // Send response once per unique sender (skip self, system, and delegate targets)
             let mut replied: std::collections::HashSet<String> = std::collections::HashSet::new();
             if let Some(response) = &collab_output.response {
                 if !response.is_empty() {
                     for msg in messages {
                         if msg.sender != self.instance_id
+                            && msg.sender != "system"
                             && !delegated_to.contains(&msg.sender)
                             && replied.insert(msg.sender.clone())
                         {
@@ -918,7 +931,7 @@ Do NOT use `collab send`, `collab todo add`, or `collab broadcast` — the harne
                     // Plain text response — send it
                     self.log(&format!("no markers — sending raw response"));
                     for msg in messages {
-                        if msg.sender != self.instance_id {
+                        if msg.sender != self.instance_id && msg.sender != "system" {
                             if let Err(e) = self.client.add_message(&msg.sender, &raw, None).await {
                                 self.log_error(&format!("Failed to send response to @{}: {}", msg.sender, e));
                             }

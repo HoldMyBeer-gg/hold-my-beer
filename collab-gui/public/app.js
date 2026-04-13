@@ -75,8 +75,23 @@ const CLI_TEMPLATES = {
   });
 
   if (cfg.setupComplete && cfg.token) {
-    // Already set up — go straight to dashboard
+    // Already set up — hide wizard, show dashboard, and restart the server.
+    // On a fresh app launch the server sidecar isn't running yet, so SSE
+    // would loop on "reconnecting…" forever without this.
+    const wiz  = document.getElementById('wizard');
+    const dash = document.getElementById('dashboard');
+    wiz.hidden = true;
+    dash.hidden = false;
+    requestAnimationFrame(() => dash.classList.add('visible'));
+    dashboardActive = true;
     showDashboard();
+    // Start server in background — connectSSE (called by showDashboard)
+    // will keep retrying until the server is ready.
+    invoke('start_server', {
+      serverUrl:  cfg.serverUrl,
+      token:      cfg.token,
+      projectDir: cfg.projectDir,
+    }).catch(e => toast('Server error: ' + e, true));
   } else {
     // Show wizard, pre-fill fields
     prefillWizard();
@@ -1035,8 +1050,8 @@ function onComposeKeydown(e) {
     if (e.key === 'Escape') { closeSlashList(); return; }
   }
 
-  // Shift+Enter sends (original behavior)
-  if (e.key === 'Enter' && e.shiftKey) {
+  // Enter sends, Shift+Enter adds a newline
+  if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     doSendMessage();
   }

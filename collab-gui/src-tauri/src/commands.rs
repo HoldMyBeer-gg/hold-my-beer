@@ -127,6 +127,7 @@ pub async fn start_server(
         .sidecar("collab-server")
         .map_err(|e| format!("Could not locate collab-server sidecar: {e}"))?
         .env("COLLAB_TOKEN", &token)
+        .env("COLLAB_HOST", "0.0.0.0")
         .args(["--port", &port.to_string()])
         .current_dir(cwd);
 
