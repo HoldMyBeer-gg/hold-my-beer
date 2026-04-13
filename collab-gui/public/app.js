@@ -165,7 +165,14 @@ function step3Next() {
       toast(`Worker name "${name}" must be lowercase letters, numbers, and hyphens only.`, true);
       ok = false;
     }
-    updated.push({ name, role });
+    // Preserve any extra fields (model, cli_template, etc.) from the existing worker
+    const existing = workers[Array.from(cards).indexOf(card)] || {};
+    const modelEl = card.querySelector('.wc-model');
+    const tmplEl  = card.querySelector('.wc-cli-template');
+    const entry = { ...existing, name, role };
+    if (modelEl) entry.model = modelEl.value.trim() || undefined;
+    if (tmplEl)  entry.cli_template = tmplEl.value.trim() || undefined;
+    updated.push(entry);
   });
   if (!ok) return;
   if (updated.length === 0) { toast('Add at least one worker.', true); return; }
@@ -193,16 +200,37 @@ function renderWorkerCards() {
   workers.forEach((w, i) => {
     const div = document.createElement('div');
     div.className = 'worker-card';
+    const hasAdvanced = w.model || w.cli_template;
     div.innerHTML = `
-      <div class="field">
-        <label>Name</label>
-        <input class="inp wc-name inp-mono" type="text" value="${esc(w.name)}" placeholder="backend" autocomplete="off" spellcheck="false">
+      <div class="wc-top">
+        <div class="field">
+          <label>Name</label>
+          <input class="inp wc-name inp-mono" type="text" value="${esc(w.name)}" placeholder="backend" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label>Role</label>
+          <input class="inp wc-role" type="text" value="${esc(w.role)}" placeholder="What this worker does">
+        </div>
       </div>
-      <div class="field">
-        <label>Role</label>
-        <input class="inp wc-role" type="text" value="${esc(w.role)}" placeholder="What this worker does">
+      <div class="wc-advanced-wrap">
+        <button type="button" class="btn btn-ghost btn-xs wc-adv-toggle">${hasAdvanced ? '▾' : '▸'} Advanced</button>
+        <div class="wc-advanced" ${hasAdvanced ? '' : 'hidden'}>
+          <div class="field">
+            <label>Model override</label>
+            <input class="inp wc-model inp-mono" type="text" value="${esc(w.model || '')}" placeholder="(use default)">
+          </div>
+          <div class="field">
+            <label>CLI template override</label>
+            <input class="inp wc-cli-template inp-mono" type="text" value="${esc(w.cli_template || '')}" placeholder="(use default)">
+          </div>
+        </div>
       </div>
     `;
+    div.querySelector('.wc-adv-toggle').addEventListener('click', e => {
+      const panel = div.querySelector('.wc-advanced');
+      panel.hidden = !panel.hidden;
+      e.target.textContent = (panel.hidden ? '▸' : '▾') + ' Advanced';
+    });
     const rm = document.createElement('button');
     rm.className = 'btn btn-ghost btn-icon wc-remove';
     rm.title = 'Remove worker';
@@ -220,13 +248,20 @@ function syncWorkersFromDom() {
   const cards = document.querySelectorAll('.worker-card');
   if (!cards.length) return;
   const updated = [];
-  cards.forEach(card => {
+  cards.forEach((card, i) => {
     const nameEl = card.querySelector('.wc-name');
     const roleEl = card.querySelector('.wc-role');
-    updated.push({
+    const modelEl = card.querySelector('.wc-model');
+    const tmplEl  = card.querySelector('.wc-cli-template');
+    const existing = workers[i] || {};
+    const entry = {
+      ...existing,
       name: nameEl ? nameEl.value : '',
       role: roleEl ? roleEl.value : '',
-    });
+    };
+    if (modelEl) entry.model = modelEl.value.trim() || undefined;
+    if (tmplEl)  entry.cli_template = tmplEl.value.trim() || undefined;
+    updated.push(entry);
   });
   workers = updated;
 }
@@ -547,6 +582,8 @@ function buildWorkersYaml() {
   for (const w of workers) {
     lines.push(`  - name: ${w.name}`);
     lines.push(`    role: "${yamlStr(w.role)}"`);
+    if (w.model) lines.push(`    model: ${w.model}`);
+    if (w.cli_template) lines.push(`    cli_template: "${yamlStr(w.cli_template)}"`);
   }
   return lines.join('\n') + '\n';
 }
@@ -1145,26 +1182,10 @@ async function doStopWorkers() {
 }
 
 async function doBroadcastStop() {
-  if (!confirm('Send a stop signal to all workers?')) return;
-  const sender = cfg.identity || 'gui';
-  try {
-    await fetch(`${cfg.serverUrl}/messages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization:  `Bearer ${cfg.token}`,
-      },
-      body: JSON.stringify({
-        sender,
-        recipient: 'all',
-        content: 'STOP — shutting down. Please finish your current task and exit.',
-        refs: [],
-      }),
-    });
-    toast('Stop signal broadcast.', false);
-  } catch (e) {
-    toast('Error: ' + e, true);
-  }
+  if (!confirm('Stop all workers?')) return;
+  // Actually kill the worker processes — the old "broadcast a polite message"
+  // approach relied on the LLM honoring a STOP message, which it never did.
+  await doStopWorkers();
 }
 
 // ── Presence heartbeat ────────────────────────────────────────────────────────

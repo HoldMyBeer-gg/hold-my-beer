@@ -194,12 +194,16 @@
       border: 1px solid var(--border);
       border-radius: var(--r);
       padding: 16px;
-      display: grid;
-      grid-template-columns: 1fr 1fr auto;
-      gap: 10px;
-      align-items: start;
+      position: relative;
     }
-    .worker-card .field:last-of-type { grid-column: 1 / -2; }
+    .wc-top { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .wc-top .field:nth-child(2) { grid-column: 1 / -1; }
+    .wc-remove { position: absolute; top: 12px; right: 12px; }
+    .wc-advanced-wrap { margin-top: 8px; }
+    .wc-adv-toggle { font-size: 12px; color: var(--dim-text); padding: 2px 0; }
+    .wc-adv-toggle:hover { color: var(--sub); }
+    .wc-advanced { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+    .wc-advanced label { font-size: 12px; color: var(--dim-text); }
 
     /* Tool select */
     .tool-select {
