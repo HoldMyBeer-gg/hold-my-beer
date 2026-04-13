@@ -336,6 +336,7 @@ enum Commands {
     },
 
     /// Show running worker processes
+    #[command(alias = "ps")]
     LifecycleStatus,
 }
 
