@@ -484,6 +484,7 @@
       padding: 8px 10px;
     }
     .todo-by   { font-size: 10px; color: var(--dim-text); margin-bottom: 4px; font-family: 'Fira Code', monospace; }
+    .todo-assignee { color: var(--accent); font-weight: 600; }
     .todo-desc { font-size: 12px; color: var(--text); line-height: 1.5; }
 
     /* Todo compose form */
