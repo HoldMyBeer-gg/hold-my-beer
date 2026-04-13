@@ -556,10 +556,11 @@ async function doLaunch() {
   // Save config
   cfg.setupComplete = true;
   try {
-    // Exclude the token from the on-disk config — require re-entry on next launch
-    // rather than storing a credential in plaintext in ~/.collab.toml.
-    const { token: _t, ...cfgWithoutToken } = cfg;
-    await invoke('save_config', { config: cfgWithoutToken });
+    // Persist the full config including the token. The token lives in a
+    // user-only file under ~/.config/hold-my-beer-gui/ — the same trust level
+    // as your SSH keys and shell history — and the alternative (re-entering a
+    // 64-char hex token every launch) is hostile for a localhost dev tool.
+    await invoke('save_config', { config: cfg });
   } catch (e) { /* non-fatal */ }
 
   document.getElementById('open-dash-btn').hidden = false;
