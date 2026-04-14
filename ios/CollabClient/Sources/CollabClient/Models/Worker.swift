@@ -21,4 +21,15 @@ struct Worker: Codable, Identifiable {
         else { return false }
         return Date().timeIntervalSince(date) < 90
     }
+
+    var lastSeenFormatted: String? {
+        guard let ls = lastSeen,
+              let date = ISO8601DateFormatter().date(from: ls)
+        else { return nil }
+        let elapsed = Date().timeIntervalSince(date)
+        if elapsed < 60 { return "just now" }
+        if elapsed < 3600 { return "\(Int(elapsed / 60))m ago" }
+        if elapsed < 86400 { return "\(Int(elapsed / 3600))h ago" }
+        return "\(Int(elapsed / 86400))d ago"
+    }
 }

@@ -72,14 +72,21 @@ struct WorkerRow: View {
 
             Spacer()
 
-            if let count = worker.messageCount, count > 0 {
-                Text("\(count)")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color(.systemGray5))
-                    .clipShape(Capsule())
+            VStack(alignment: .trailing, spacing: 3) {
+                if let count = worker.messageCount, count > 0 {
+                    Text("\(count) msgs")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(.systemGray5))
+                        .clipShape(Capsule())
+                }
+                if let ago = worker.lastSeenFormatted {
+                    Text(ago)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .padding(.horizontal, 16)

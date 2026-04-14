@@ -3,6 +3,7 @@ import SwiftUI
 struct UsageView: View {
     @ObservedObject var vm: AppViewModel
     @State private var isLoading = false
+    @State private var refreshTimer: Timer?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -22,9 +23,10 @@ struct UsageView: View {
             if let m = vm.metrics {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                     MetricCard(label: "Total Messages", value: "\(m.totalMessages ?? 0)", icon: "bubble.left.and.bubble.right")
+                    MetricCard(label: "Messages (Last Hour)", value: "\(m.messagesLastHour ?? 0)", icon: "chart.line.uptrend.xyaxis")
                     MetricCard(label: "Active Workers", value: "\(m.activeWorkers ?? 0)", icon: "person.3")
+                    MetricCard(label: "SSE Streams", value: "\(m.sseSubscribers ?? 0)", icon: "antenna.radiowaves.left.and.right")
                     MetricCard(label: "Uptime", value: m.uptimeFormatted, icon: "clock")
-                    MetricCard(label: "Msgs/Hour", value: String(format: "%.1f", m.messagesPerHour ?? 0), icon: "chart.line.uptrend.xyaxis")
                 }
             } else {
                 Text("No metrics available")
@@ -33,7 +35,16 @@ struct UsageView: View {
             }
         }
         .padding(16)
-        .onAppear { refresh() }
+        .onAppear {
+            refresh()
+            refreshTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { _ in
+                Task { @MainActor in self.refresh() }
+            }
+        }
+        .onDisappear {
+            refreshTimer?.invalidate()
+            refreshTimer = nil
+        }
     }
 
     private func refresh() {

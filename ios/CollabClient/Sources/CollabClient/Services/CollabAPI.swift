@@ -58,7 +58,7 @@ final class CollabAPI: ObservableObject {
     }
 
     private func patch(_ path: String) async throws {
-        var req = try makeRequest(path: path, method: "PATCH")
+        let req = try makeRequest(path: path, method: "PATCH")
         let (_, resp) = try await URLSession.shared.data(for: req)
         if let http = resp as? HTTPURLResponse, http.statusCode == 401 { throw APIError.unauthorized }
         if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {

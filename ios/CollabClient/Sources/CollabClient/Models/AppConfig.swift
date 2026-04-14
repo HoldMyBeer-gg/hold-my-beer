@@ -9,10 +9,13 @@ struct AppConfig: Codable {
     static let key = "collab_config"
 
     static func load() -> AppConfig {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let cfg = try? JSONDecoder().decode(AppConfig.self, from: data)
-        else { return AppConfig() }
-        return cfg
+        guard let data = UserDefaults.standard.data(forKey: key) else { return AppConfig() }
+        do {
+            return try JSONDecoder().decode(AppConfig.self, from: data)
+        } catch {
+            print("[AppConfig] Failed to decode saved config, using defaults: \(error)")
+            return AppConfig()
+        }
     }
 
     func save() {

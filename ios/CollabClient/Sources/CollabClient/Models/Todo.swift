@@ -1,7 +1,7 @@
 import Foundation
 
 struct TodoItem: Codable, Identifiable {
-    let id: Int
+    let id: String
     let hash: String
     let instance: String
     let assignedBy: String

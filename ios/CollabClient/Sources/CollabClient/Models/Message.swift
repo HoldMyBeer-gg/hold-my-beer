@@ -1,11 +1,12 @@
 import Foundation
 
 struct Message: Codable, Identifiable, Equatable {
-    let id: Int
+    let id: String
     let hash: String
     let sender: String
     let recipient: String
     let content: String
+    let refs: [String]
     let timestamp: String
 
     var date: Date {

@@ -111,7 +111,7 @@ final class AppViewModel: ObservableObject {
                 let allHistory = try await api.fetchHistory(for: "all", limit: 200)
                 let combined = (history + allHistory)
                     .sorted { $0.date < $1.date }
-                var seen = Set<Int>()
+                var seen = Set<String>()
                 messages = combined.filter { seen.insert($0.id).inserted }
             } catch {
                 showError(error.localizedDescription)
@@ -122,7 +122,9 @@ final class AppViewModel: ObservableObject {
     func fetchRoster() async {
         do {
             roster = try await api.fetchRoster()
-        } catch {}
+        } catch {
+            showError(error.localizedDescription)
+        }
     }
 
     func fetchTodos() async {
@@ -140,7 +142,11 @@ final class AppViewModel: ObservableObject {
     }
 
     func fetchMetrics() async {
-        metrics = try? await api.fetchMetrics()
+        do {
+            metrics = try await api.fetchMetrics()
+        } catch {
+            showError(error.localizedDescription)
+        }
     }
 
     // MARK: - Messages
@@ -202,13 +208,7 @@ let workerColors: [Color] = [
     Color(red: 0.3,  green: 0.8,  blue: 0.8),   // cyan
 ]
 
-private var colorAssignments: [String: Int] = [:]
-private var colorCounter = 0
-
 func colorForSender(_ sender: String) -> Color {
-    if let idx = colorAssignments[sender] { return workerColors[idx] }
-    let idx = colorCounter % workerColors.count
-    colorAssignments[sender] = idx
-    colorCounter += 1
-    return workerColors[idx]
+    let hash = sender.unicodeScalars.reduce(5381) { ($0 << 5) &+ $0 &+ Int($1.value) }
+    return workerColors[abs(hash) % workerColors.count]
 }
