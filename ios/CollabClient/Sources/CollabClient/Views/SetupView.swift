@@ -136,24 +136,23 @@ struct SetupView: View {
         isTesting = true
         errorMsg = nil
 
-        var cfg = AppConfig()
-        cfg.token = trimmedToken
-        cfg.serverURL = trimmedURL
-        cfg.identity = trimmedID
-        cfg.setupComplete = true
-        vm.applyConfig(cfg)
+        // Stage config on the API client so checkHealth can use it,
+        // but don't persist (setupComplete=false) until the check passes.
+        var staged = AppConfig()
+        staged.token = trimmedToken
+        staged.serverURL = trimmedURL
+        staged.identity = trimmedID
+        staged.setupComplete = false
+        vm.api.config = staged
 
         Task {
             let ok = await vm.api.checkHealth()
             isTesting = false
             if ok {
-                vm.config.setupComplete = true
-                vm.config.save()
+                staged.setupComplete = true
+                vm.applyConfig(staged)  // single save after confirmed reachable
             } else {
                 errorMsg = "Could not reach server. Check URL and token."
-                var badCfg = cfg
-                badCfg.setupComplete = false
-                vm.applyConfig(badCfg)
             }
         }
     }

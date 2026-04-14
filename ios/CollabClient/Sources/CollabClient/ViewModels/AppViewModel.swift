@@ -123,7 +123,7 @@ final class AppViewModel: ObservableObject {
 
     func fetchRoster() async {
         do {
-            roster = try await api.fetchRoster()
+            roster = try await withPollingTimeout { try await self.api.fetchRoster() }
         } catch {
             showError(error.localizedDescription)
         }
@@ -145,7 +145,7 @@ final class AppViewModel: ObservableObject {
 
     func fetchMetrics() async {
         do {
-            metrics = try await api.fetchMetrics()
+            metrics = try await withPollingTimeout { try await self.api.fetchMetrics() }
         } catch {
             showError(error.localizedDescription)
         }
@@ -209,6 +209,24 @@ final class AppViewModel: ObservableObject {
             if msg.sender != me && (msg.recipient == me || msg.isToAll) { return msg.sender }
         }
         return messages.reversed().first(where: { $0.sender != me })?.sender
+    }
+}
+
+// MARK: - Polling timeout helper
+/// Races an async operation against a 12-second deadline.
+/// The URLRequest itself has a 15s timeout, so this outer wrapper catches
+/// any hang at the Swift concurrency layer before that fires.
+private func withPollingTimeout<T: Sendable>(
+    _ operation: @MainActor @Sendable @escaping () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { @MainActor in try await operation() }
+        group.addTask {
+            try await Task.sleep(nanoseconds: 12_000_000_000)
+            throw CancellationError()
+        }
+        defer { group.cancelAll() }
+        return try await group.next()!
     }
 }
 

@@ -56,6 +56,7 @@ final class SSEService: NSObject, ObservableObject {
     private func scheduleReconnect() {
         let delay = min(1.0 * pow(1.8, Double(retryCount)) + Double.random(in: 0...0.5), 30.0)
         retryCount += 1
+        print("[SSE] Scheduling reconnect in \(String(format: "%.1f", delay))s (attempt \(retryCount))")
         retryTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
