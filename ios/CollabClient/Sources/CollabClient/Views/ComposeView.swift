@@ -24,7 +24,7 @@ struct ComposeView: View {
         VStack(spacing: 0) {
             // Mention autocomplete list
             if showMentions && !mentionMatches.isEmpty {
-                autocompleteList
+                MentionAutocompleteBar(matches: mentionMatches, selectedIndex: mentionIdx, onSelect: applyMention)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -69,26 +69,6 @@ struct ComposeView: View {
     private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSending }
 
     // MARK: - Autocomplete UI
-
-    private var autocompleteList: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(Array(mentionMatches.enumerated()), id: \.offset) { idx, name in
-                    Button("@\(name)") { applyMention(name) }
-                        .font(.caption.bold())
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(idx == mentionIdx
-                            ? Color.blue.opacity(0.15)
-                            : Color(.secondarySystemBackground))
-                        .foregroundStyle(idx == mentionIdx ? .blue : .primary)
-                        .clipShape(Capsule())
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-        }
-    }
 
     private var slashList: some View {
         VStack(alignment: .leading, spacing: 0) {

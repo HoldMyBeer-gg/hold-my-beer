@@ -6,6 +6,7 @@ enum APIError: LocalizedError {
     case decodingError(Error)
     case networkError(Error)
     case unauthorized
+    case rateLimited(retryAfter: TimeInterval?)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,9 @@ enum APIError: LocalizedError {
         case .decodingError(let e): return "Parse error: \(e.localizedDescription)"
         case .networkError(let e): return "Network error: \(e.localizedDescription)"
         case .unauthorized: return "Invalid token — check your credentials"
+        case .rateLimited(let after):
+            if let after { return "Rate limited — retry in \(Int(after))s" }
+            return "Rate limited — please slow down"
         }
     }
 }
@@ -51,19 +55,13 @@ final class CollabAPI: ObservableObject {
         var req = try makeRequest(path: path, method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         let (_, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode == 401 { throw APIError.unauthorized }
-        if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.httpError(http.statusCode)
-        }
+        try checkStatus(resp)
     }
 
     private func patch(_ path: String) async throws {
         let req = try makeRequest(path: path, method: "PATCH")
         let (_, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode == 401 { throw APIError.unauthorized }
-        if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.httpError(http.statusCode)
-        }
+        try checkStatus(resp)
     }
 
     private func put<B: Encodable>(_ path: String, body: B) async throws {
@@ -71,19 +69,13 @@ final class CollabAPI: ObservableObject {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(body)
         let (_, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode == 401 { throw APIError.unauthorized }
-        if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.httpError(http.statusCode)
-        }
+        try checkStatus(resp)
     }
 
     private func delete(_ path: String) async throws {
         let req = try makeRequest(path: path, method: "DELETE")
         let (_, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode == 401 { throw APIError.unauthorized }
-        if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw APIError.httpError(http.statusCode)
-        }
+        try checkStatus(resp)
     }
 
     private func deleteReturning<T: Decodable>(_ path: String) async throws -> T {
@@ -104,6 +96,10 @@ final class CollabAPI: ObservableObject {
             let (data, resp) = try await URLSession.shared.data(for: req)
             if let http = resp as? HTTPURLResponse {
                 if http.statusCode == 401 { throw APIError.unauthorized }
+                if http.statusCode == 429 {
+                    let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+                    throw APIError.rateLimited(retryAfter: retryAfter)
+                }
                 if !(200..<300).contains(http.statusCode) { throw APIError.httpError(http.statusCode) }
             }
             do {
@@ -116,6 +112,17 @@ final class CollabAPI: ObservableObject {
         } catch {
             throw APIError.networkError(error)
         }
+    }
+
+    /// Checks status code and throws the appropriate APIError for non-2xx responses.
+    private func checkStatus(_ resp: URLResponse) throws {
+        guard let http = resp as? HTTPURLResponse else { return }
+        if http.statusCode == 401 { throw APIError.unauthorized }
+        if http.statusCode == 429 {
+            let retryAfter = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+            throw APIError.rateLimited(retryAfter: retryAfter)
+        }
+        if !(200..<300).contains(http.statusCode) { throw APIError.httpError(http.statusCode) }
     }
 
     // MARK: - Public API

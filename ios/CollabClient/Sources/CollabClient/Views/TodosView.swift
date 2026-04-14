@@ -66,22 +66,7 @@ struct TodosView: View {
         VStack(alignment: .leading, spacing: 10) {
             // Mention autocomplete
             if showMentions && !mentionMatches.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(mentionMatches, id: \.self) { name in
-                            Button("@\(name)") {
-                                applyMention(name)
-                            }
-                            .font(.caption.bold())
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 5)
-                            .background(Color.blue.opacity(0.12))
-                            .foregroundStyle(.blue)
-                            .clipShape(Capsule())
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                }
+                MentionAutocompleteBar(matches: mentionMatches, onSelect: applyMention)
             }
 
             // Worker picker
@@ -171,6 +156,7 @@ struct TodosView: View {
         Task {
             do {
                 try await vm.addTodo(instance: newTodoInstance, description: newTodoDesc)
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 newTodoDesc = ""
                 newTodoInstance = ""
                 showAddForm = false
