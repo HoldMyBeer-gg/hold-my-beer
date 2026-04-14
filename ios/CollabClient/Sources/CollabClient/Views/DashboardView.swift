@@ -82,7 +82,7 @@ struct DashboardView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { vm.stopDashboard(); vm.config.setupComplete = false; vm.config.save() }) {
+                    Button(action: { vm.signOut() }) {
                         Image(systemName: "gear")
                     }
                 }

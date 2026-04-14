@@ -77,6 +77,20 @@ final class CollabAPI: ObservableObject {
         }
     }
 
+    private func delete(_ path: String) async throws {
+        let req = try makeRequest(path: path, method: "DELETE")
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        if let http = resp as? HTTPURLResponse, http.statusCode == 401 { throw APIError.unauthorized }
+        if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            throw APIError.httpError(http.statusCode)
+        }
+    }
+
+    private func deleteReturning<T: Decodable>(_ path: String) async throws -> T {
+        let req = try makeRequest(path: path, method: "DELETE")
+        return try await perform(req)
+    }
+
     private func makeRequest(path: String, method: String) throws -> URLRequest {
         let u = try url(path)
         var req = URLRequest(url: u, timeoutInterval: 15)
@@ -143,6 +157,16 @@ final class CollabAPI: ObservableObject {
     func updatePresence(instance: String, role: String) async throws {
         struct PresenceBody: Encodable { let role: String; let status: String }
         try await put("/presence/\(instance)", body: PresenceBody(role: role, status: "active"))
+    }
+
+    func deletePresence(instance: String) async throws {
+        try await delete("/presence/\(instance)")
+    }
+
+    func cleanupMessages() async throws -> Int {
+        struct CleanupResult: Decodable { let deleted: Int }
+        let result: CleanupResult = try await deleteReturning("/messages/cleanup")
+        return result.deleted
     }
 
     func checkHealth() async -> Bool {

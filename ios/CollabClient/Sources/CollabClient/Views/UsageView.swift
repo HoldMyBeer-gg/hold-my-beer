@@ -3,6 +3,8 @@ import SwiftUI
 struct UsageView: View {
     @ObservedObject var vm: AppViewModel
     @State private var isLoading = false
+    @State private var isCleaning = false
+    @State private var cleanupResult: String?
     @State private var refreshTimer: Timer?
 
     var body: some View {
@@ -33,6 +35,35 @@ struct UsageView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Admin")
+                    .font(.caption.bold())
+                    .foregroundStyle(.secondary)
+
+                Button(action: cleanup) {
+                    HStack {
+                        if isCleaning {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "trash")
+                        }
+                        Text("Cleanup Old Messages")
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .disabled(isCleaning)
+
+                if let result = cleanupResult {
+                    Text(result)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .padding(16)
         .onAppear {
@@ -52,6 +83,21 @@ struct UsageView: View {
         Task {
             await vm.fetchMetrics()
             isLoading = false
+        }
+    }
+
+    private func cleanup() {
+        isCleaning = true
+        cleanupResult = nil
+        Task {
+            do {
+                let deleted = try await vm.cleanupMessages()
+                cleanupResult = "Deleted \(deleted) old message\(deleted == 1 ? "" : "s")."
+                await vm.fetchMetrics()
+            } catch {
+                cleanupResult = "Error: \(error.localizedDescription)"
+            }
+            isCleaning = false
         }
     }
 }

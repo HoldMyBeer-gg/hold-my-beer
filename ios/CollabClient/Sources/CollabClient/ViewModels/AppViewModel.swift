@@ -171,6 +171,18 @@ final class AppViewModel: ObservableObject {
         if tab == .mentions { unreadMentions = 0 }
     }
 
+    func signOut() {
+        let instance = config.identity
+        stopDashboard()
+        config.setupComplete = false
+        config.save()
+        Task { try? await api.deletePresence(instance: instance) }
+    }
+
+    func cleanupMessages() async throws -> Int {
+        try await api.cleanupMessages()
+    }
+
     // MARK: - Todos
 
     func addTodo(instance: String, description: String) async throws {
