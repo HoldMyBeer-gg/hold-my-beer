@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -161,12 +162,63 @@ pub struct Todo {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+/// The slice of CollabClient that the worker harness depends on. Defined as a
+/// trait so tests can substitute a recording fake without touching the network.
+/// Methods here intentionally cover only what `process_messages` and the SSE
+/// loop need — not the entire CLI surface.
+#[async_trait]
+pub trait CollabApi: Send + Sync {
+    async fn add_message(&self, recipient: &str, content: &str, refs: Option<Vec<String>>) -> Result<()>;
+    async fn todo_add(&self, instance: &str, description: &str) -> Result<()>;
+    async fn todo_done(&self, hash_prefix: &str) -> Result<()>;
+    async fn fetch_pending_messages(&self) -> Result<Vec<Message>>;
+    async fn fetch_history_pub(&self, instance_id: &str) -> Result<Vec<Message>>;
+    async fn fetch_todos(&self, instance: &str) -> Result<Vec<Todo>>;
+    async fn heartbeat(&self, role: Option<&str>) -> Result<()>;
+
+    /// Base URL — used by the SSE loop to construct event-stream URLs.
+    fn base_url(&self) -> &str;
+    /// Bearer token if auth is configured — used by the SSE loop.
+    fn bearer_token(&self) -> Option<&str>;
+    /// Reqwest client — shared so SSE reuses the connection pool.
+    fn http_client(&self) -> &reqwest::Client;
+}
+
 #[derive(Clone)]
 pub struct CollabClient {
     pub base_url: String,
     pub instance_id: String,
     pub token: Option<String>,
     pub client: reqwest::Client,
+}
+
+#[async_trait]
+impl CollabApi for CollabClient {
+    async fn add_message(&self, recipient: &str, content: &str, refs: Option<Vec<String>>) -> Result<()> {
+        CollabClient::add_message(self, recipient, content, refs).await
+    }
+    async fn todo_add(&self, instance: &str, description: &str) -> Result<()> {
+        CollabClient::todo_add(self, instance, description).await
+    }
+    async fn todo_done(&self, hash_prefix: &str) -> Result<()> {
+        CollabClient::todo_done(self, hash_prefix).await
+    }
+    async fn fetch_pending_messages(&self) -> Result<Vec<Message>> {
+        CollabClient::fetch_pending_messages(self).await
+    }
+    async fn fetch_history_pub(&self, instance_id: &str) -> Result<Vec<Message>> {
+        CollabClient::fetch_history_pub(self, instance_id).await
+    }
+    async fn fetch_todos(&self, instance: &str) -> Result<Vec<Todo>> {
+        CollabClient::fetch_todos(self, instance).await
+    }
+    async fn heartbeat(&self, role: Option<&str>) -> Result<()> {
+        CollabClient::heartbeat(self, role).await
+    }
+
+    fn base_url(&self) -> &str { &self.base_url }
+    fn bearer_token(&self) -> Option<&str> { self.token.as_deref() }
+    fn http_client(&self) -> &reqwest::Client { &self.client }
 }
 
 impl CollabClient {

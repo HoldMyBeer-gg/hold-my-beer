@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Mirrors CI's audit-check job. Blocks pushes that would turn CI red.
+set -e
+
+if ! command -v cargo-audit >/dev/null 2>&1; then
+  echo "pre-push: cargo-audit not installed; run 'cargo install cargo-audit' to enable." >&2
+  exit 0
+fi
+
+echo "pre-push: running cargo audit..."
+cargo audit

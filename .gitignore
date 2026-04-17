@@ -50,6 +50,7 @@ test-results/
 Thumbs.db
 tmp
 workers.yaml
+workers.yml
 workers/
 yarn-debug.log
 yarn-error.log

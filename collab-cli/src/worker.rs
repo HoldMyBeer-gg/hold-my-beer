@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::time::{sleep, Duration, Instant};
 
-use crate::client::CollabClient;
+use crate::client::{CollabApi, CollabClient};
 
 const PING_PATTERN: &str = r"(?i)^(ping|status|are you there\??|health ?check|you up\??)$";
 /// Matches messages that OPEN with an acknowledgment phrase. Combined with a
@@ -100,7 +100,7 @@ struct DirectMessage {
 }
 
 pub struct WorkerHarness {
-    client: Arc<CollabClient>,
+    client: Arc<dyn CollabApi>,
     instance_id: String,
     workdir: PathBuf,
     model: String,
@@ -116,6 +116,9 @@ pub struct WorkerHarness {
     hands_off_to: Vec<String>,
     /// All teammates (name + role) for prompt injection
     teammates: Vec<(String, String)>,
+    /// Per-call CLI timeout. Constructor-defaulted to env COLLAB_CLI_TIMEOUT_SECS or 300s,
+    /// but exposed as a field so tests can inject short values without touching global env.
+    cli_timeout_secs: u64,
 }
 
 impl WorkerHarness {
@@ -131,8 +134,35 @@ impl WorkerHarness {
         hands_off_to: Vec<String>,
         teammates: Vec<(String, String)>,
     ) -> Self {
+        Self::new_with_api(
+            Arc::new(client),
+            instance_id,
+            workdir,
+            model,
+            cli_template,
+            cli_template_light,
+            auto_reply,
+            batch_wait_ms,
+            hands_off_to,
+            teammates,
+        )
+    }
+
+    /// Build a harness around any `CollabApi` impl. Used by tests with a fake.
+    pub fn new_with_api(
+        client: Arc<dyn CollabApi>,
+        instance_id: String,
+        workdir: PathBuf,
+        model: String,
+        cli_template: Option<String>,
+        cli_template_light: Option<String>,
+        auto_reply: bool,
+        batch_wait_ms: u64,
+        hands_off_to: Vec<String>,
+        teammates: Vec<(String, String)>,
+    ) -> Self {
         Self {
-            client: Arc::new(client),
+            client,
             instance_id,
             workdir,
             model,
@@ -144,7 +174,17 @@ impl WorkerHarness {
             first_message_time: Arc::new(Mutex::new(None)),
             hands_off_to,
             teammates,
+            cli_timeout_secs: std::env::var("COLLAB_CLI_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(300),
         }
+    }
+
+    /// Override the CLI timeout. Returns self for chaining; primarily used by tests.
+    pub fn with_cli_timeout_secs(mut self, secs: u64) -> Self {
+        self.cli_timeout_secs = secs;
+        self
     }
 
     /// Classify how much context a set of messages needs
@@ -247,6 +287,7 @@ impl WorkerHarness {
         let hands_off_to = self.hands_off_to.clone();
         let teammates = self.teammates.clone();
         let batch_status = current_status.clone();
+        let cli_timeout_secs = self.cli_timeout_secs;
 
         let max_self_kicks: u32 = 3;
 
@@ -341,6 +382,7 @@ impl WorkerHarness {
                     first_message_time: Arc::new(Mutex::new(None)),
                     hands_off_to: hands_off_to.clone(),
                     teammates: teammates.clone(),
+                    cli_timeout_secs,
                 };
 
                 let tier = harness.classify_tier(&messages).await;
@@ -360,6 +402,23 @@ impl WorkerHarness {
                         let queue = queue.clone();
                         let full_context = tier == PromptTier::Full;
                         let instance_id_for_log = instance_id.clone();
+                        let hb_client = client.clone();
+
+                        // Before spawning: push an immediate "working on…" status so the
+                        // roster reflects activity in real time instead of waiting up to
+                        // 30s for the next heartbeat tick.
+                        let senders: Vec<String> = messages.iter()
+                            .filter(|m| m.sender != instance_id)
+                            .map(|m| format!("@{}", m.sender))
+                            .collect::<std::collections::HashSet<_>>()
+                            .into_iter().collect();
+                        let working_status = if senders.is_empty() {
+                            "working (self-kick)".to_string()
+                        } else {
+                            format!("working on msg from {}", senders.join(", "))
+                        };
+                        *batch_status.lock().await = working_status.clone();
+                        let _ = hb_client.heartbeat(Some(&working_status)).await;
 
                         let handle = tokio::spawn(async move {
                             let _guard = cli_lock.lock().await;
@@ -372,10 +431,19 @@ impl WorkerHarness {
                                 }
                             };
 
-                            // Update roster presence from worker state
+                            // Update roster presence from worker state and push an
+                            // immediate heartbeat so the new status is visible now,
+                            // not on the next 30s tick.
                             let state = harness.load_state();
                             if let Some(status) = &state.status {
                                 *batch_status.lock().await = status.clone();
+                                let _ = harness.client.heartbeat(Some(status)).await;
+                            } else {
+                                // Worker didn't report a status — clear the "working on…"
+                                // marker by falling back to the role line.
+                                let role = harness.get_role();
+                                *batch_status.lock().await = role.clone();
+                                let _ = harness.client.heartbeat(Some(&role)).await;
                             }
 
                             // Auto-kick if worker has pending todos but didn't self-continue.
@@ -465,10 +533,10 @@ impl WorkerHarness {
         let mut backoff_secs = 1u64;
 
         loop {
-            let url = format!("{}/events/{}", self.client.base_url, self.instance_id);
-            let mut req = self.client.client.get(&url).header("Accept", "text/event-stream");
+            let url = format!("{}/events/{}", self.client.base_url(), self.instance_id);
+            let mut req = self.client.http_client().get(&url).header("Accept", "text/event-stream");
 
-            if let Some(token) = &self.client.token {
+            if let Some(token) = self.client.bearer_token() {
                 req = req.header("Authorization", format!("Bearer {}", token));
             }
 
@@ -638,6 +706,16 @@ impl WorkerHarness {
 {}New messages ({}):
 {}
 
+## CRITICAL RULES (absolute — no exceptions)
+
+**NO DATES OR TIMES.** Never mention dates, deadlines, ETAs, or time estimates. If a teammate mentioned a date, ignore it — it was hallucinated. You have no calendar awareness between invocations.
+
+**VERIFY BEFORE PROPAGATING.** Before acting on any claim from a teammate (file exists, bug found, task done), run a tool call to verify it yourself. Never forward an unverified claim. If you can't verify it, say so — do not assume it's true.
+
+**NO ACK RESPONSES.** Never send acknowledgment-only messages ('Got it', 'Understood', 'Standing by'). Either do the work immediately and report results, or stay silent. Ack loops waste cycles and spread hallucinations.
+
+**IF IT DOESN'T EXIST, SAY SO.** If asked to work on something that doesn't exist (file, feature, task), stop, report what you actually found, and ask for clarification. Do not invent context.
+
 Act on the new messages above. Use Bash/Read/Write/Edit to do your actual work.
 
 When done, your FINAL output must be ONLY a JSON object (no other text before or after):
@@ -734,6 +812,16 @@ Previous state:
 {}
 New messages ({}):
 {}
+
+## CRITICAL RULES (absolute — no exceptions)
+
+**NO DATES OR TIMES.** Never mention dates, deadlines, ETAs, or time estimates in any message or response. If a teammate mentioned a date (e.g. 'EOD April 17th', 'by Thursday'), ignore it — it was hallucinated. You have no calendar awareness between invocations.
+
+**VERIFY BEFORE PROPAGATING.** Before acting on any claim from a teammate (file exists, bug found, task complete, feature ready), run a tool call to verify it yourself. Never forward an unverified claim to another worker. If you cannot verify it, say so explicitly — do not assume it's true.
+
+**NO ACK RESPONSES.** Never send acknowledgment-only messages ('Got it', 'Understood', 'Standing by', 'Will do'). Either do the work immediately and report results, or stay silent. Ack loops waste cycles and propagate hallucinated context.
+
+**IF IT DOESN'T EXIST, SAY SO.** If asked to work on something that doesn't exist (a file, a feature, a task), stop, report what you actually found with a tool call, and ask for clarification. Do not invent context.
 
 Act on the new messages above. Use Bash/Read/Write/Edit to do your actual work (coding, research, testing).
 
@@ -866,10 +954,7 @@ Do NOT run any `collab` command in this session — the harness manages collab s
             ));
         };
 
-        let timeout_secs = std::env::var("COLLAB_CLI_TIMEOUT_SECS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(300);
+        let timeout_secs = self.cli_timeout_secs;
 
         let output = match tokio::time::timeout(
             Duration::from_secs(timeout_secs),
@@ -939,6 +1024,7 @@ Do NOT run any `collab` command in this session — the harness manages collab s
 
         // Parse structured output
         let mut did_continue = false;
+        let mut debug_was_dumped = false;
         if let Some(collab_output) = self.parse_collab_output(&stdout) {
             // Build set of delegate targets to avoid duplicate messages
             let delegated_to: std::collections::HashSet<String> = collab_output.delegate.iter()
@@ -964,8 +1050,19 @@ Do NOT run any `collab` command in this session — the harness manages collab s
             }
 
             // Delegate tasks — create todo (todo_add already sends a ping message)
+            // Validate target against known teammates to prevent hallucinated delegations
+            let known_teammates: std::collections::HashSet<String> = self.teammates.iter()
+                .map(|(name, _)| name.clone())
+                .collect();
             for task in &collab_output.delegate {
                 let to = task.to.trim_start_matches('@');
+                if !known_teammates.is_empty() && !known_teammates.contains(to) && to != self.instance_id {
+                    self.log_error(&format!(
+                        "Skipping delegation to unknown worker @{} (not in teammates list) — possible hallucination",
+                        to
+                    ));
+                    continue;
+                }
                 if let Err(e) = self.client.todo_add(to, &task.task).await {
                     self.log_error(&format!("Failed to add todo for @{}: {}", to, e));
                 }
@@ -995,8 +1092,9 @@ Do NOT run any `collab` command in this session — the harness manages collab s
                 }
             }
 
-            // Mark completed tasks and auto-route to downstream workers
-            // Cap at 5 per call — process first 5, warn about any beyond that
+            // Mark completed tasks and auto-route to downstream workers.
+            // Only route pipeline if tasks were *actually* confirmed done by the server —
+            // prevents hallucinated hashes from triggering downstream work.
             let max_completions = 5;
             if collab_output.completed_tasks.len() > max_completions {
                 self.log_error(&format!(
@@ -1005,6 +1103,7 @@ Do NOT run any `collab` command in this session — the harness manages collab s
                 ));
             }
             let mut completed_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut actually_completed: usize = 0;
             for hash in collab_output.completed_tasks.iter().take(max_completions) {
                 let hash_clean = hash.trim();
                 if hash_clean.is_empty() { continue; }
@@ -1013,14 +1112,18 @@ Do NOT run any `collab` command in this session — the harness manages collab s
                     continue;
                 }
                 match self.client.todo_done(hash_clean).await {
-                    Ok(_) => self.log(&format!("task {} marked done", hash_clean)),
+                    Ok(_) => {
+                        self.log(&format!("task {} marked done", hash_clean));
+                        actually_completed += 1;
+                    }
                     Err(e) => self.log_error(&format!("Failed to mark task {} done: {}", hash_clean, e)),
                 }
             }
 
             // Pipeline: auto-dispatch to downstream workers. Skip any that
             // already received a message this turn via response/delegate/messages.
-            if !collab_output.completed_tasks.is_empty() && !self.hands_off_to.is_empty() {
+            // Guard: only route if at least one task was *actually* confirmed done.
+            if actually_completed > 0 && !self.hands_off_to.is_empty() {
                 let summary = collab_output.response.as_deref().unwrap_or("Task completed.");
                 let handoff_msg = format!("Completed work from @{}: {}", self.instance_id, summary);
                 for downstream in &self.hands_off_to {
@@ -1067,6 +1170,7 @@ Do NOT run any `collab` command in this session — the harness manages collab s
                         "KIND: json-parse-failed\nRAW_OUTPUT ({} bytes):\n{}\n",
                         raw.len(), raw
                     ));
+                    debug_was_dumped = true;
                     self.log_error(&format!(
                         "JSON parse failed — output looks like structured JSON but couldn't be parsed. \
                          Raw dumped to {}. Not sending to team.",
@@ -1134,9 +1238,12 @@ Do NOT run any `collab` command in this session — the harness manages collab s
                 let _ = std::fs::remove_file(&tmp_path);
             }
         }
-        // Remove debug dump from previous failure (if this call succeeded)
-        let debug_path = format!("/tmp/collab-debug-{}.txt", self.instance_id);
-        let _ = std::fs::remove_file(&debug_path);
+        // Remove debug dump from previous failure (if this call succeeded).
+        // Skip cleanup if THIS call dumped — otherwise we wipe the artifact we just wrote.
+        if !debug_was_dumped {
+            let debug_path = format!("/tmp/collab-debug-{}.txt", self.instance_id);
+            let _ = std::fs::remove_file(&debug_path);
+        }
 
         Ok(did_continue)
     }
@@ -1511,5 +1618,356 @@ mod tests {
             ("EMPTY".to_string(), "".to_string()),
         ]);
         assert_eq!(cmd, s(&["cmd"]));
+    }
+}
+
+/// Integration tests against a fake CollabApi + real subprocess shims.
+///
+/// Each test that spawns a subprocess uses a unique instance_id so concurrent
+/// tests don't clobber each other's `/tmp/collab-debug-<instance>.txt` artifacts.
+///
+/// Bugs each test guards against (so we don't relive 2026-04-16):
+/// - JSON-parse-fail debug dump being clobbered by unconditional cleanup
+/// - Successful follow-up failing to clear stale debug files
+/// - `KEY=VAL script` cli_templates spawning the literal string as a binary
+/// - COLLAB_INSTANCE/SERVER/TOKEN leaking into the subprocess
+/// - Spawn failures producing no diagnostic artifact
+/// - CLI timeouts producing no diagnostic artifact (and not killing the child)
+/// - Light tier prompts being amnesic on short conversational replies
+/// - Delegate target also receiving a duplicate `response` message
+#[cfg(test)]
+mod integration {
+    use super::*;
+    use crate::client::CollabApi;
+    use async_trait::async_trait;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    /// Records every call made through the trait + lets tests pre-stage the
+    /// canned responses for fetch_history_pub / fetch_todos.
+    struct FakeApi {
+        added_messages: StdMutex<Vec<(String, String)>>,
+        added_todos: StdMutex<Vec<(String, String)>>,
+        completed_todos: StdMutex<Vec<String>>,
+        history: StdMutex<Vec<crate::client::Message>>,
+        todos: StdMutex<Vec<crate::client::Todo>>,
+        // Reqwest::Client is required by the trait for SSE; tests never invoke SSE
+        // but the field still has to exist.
+        sse_client: reqwest::Client,
+    }
+
+    impl FakeApi {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                added_messages: StdMutex::new(Vec::new()),
+                added_todos: StdMutex::new(Vec::new()),
+                completed_todos: StdMutex::new(Vec::new()),
+                history: StdMutex::new(Vec::new()),
+                todos: StdMutex::new(Vec::new()),
+                sse_client: reqwest::Client::new(),
+            })
+        }
+
+        fn added_messages(&self) -> Vec<(String, String)> {
+            self.added_messages.lock().unwrap().clone()
+        }
+
+        fn added_todos(&self) -> Vec<(String, String)> {
+            self.added_todos.lock().unwrap().clone()
+        }
+
+        fn push_history(&self, sender: &str, recipient: &str, content: &str) {
+            self.history.lock().unwrap().push(crate::client::Message {
+                id: format!("hist-{}", content.len()),
+                hash: format!("h-{}", content.len()),
+                sender: sender.into(),
+                recipient: recipient.into(),
+                content: content.into(),
+                refs: vec![],
+                timestamp: chrono::Utc::now(),
+            });
+        }
+    }
+
+    #[async_trait]
+    impl CollabApi for FakeApi {
+        async fn add_message(&self, recipient: &str, content: &str, _refs: Option<Vec<String>>) -> Result<()> {
+            self.added_messages.lock().unwrap().push((recipient.into(), content.into()));
+            Ok(())
+        }
+        async fn todo_add(&self, instance: &str, description: &str) -> Result<()> {
+            self.added_todos.lock().unwrap().push((instance.into(), description.into()));
+            Ok(())
+        }
+        async fn todo_done(&self, hash: &str) -> Result<()> {
+            self.completed_todos.lock().unwrap().push(hash.into());
+            Ok(())
+        }
+        async fn fetch_pending_messages(&self) -> Result<Vec<crate::client::Message>> { Ok(Vec::new()) }
+        async fn fetch_history_pub(&self, _instance_id: &str) -> Result<Vec<crate::client::Message>> {
+            Ok(self.history.lock().unwrap().clone())
+        }
+        async fn fetch_todos(&self, _instance: &str) -> Result<Vec<crate::client::Todo>> {
+            Ok(self.todos.lock().unwrap().clone())
+        }
+        async fn heartbeat(&self, _role: Option<&str>) -> Result<()> { Ok(()) }
+        fn base_url(&self) -> &str { "http://fake" }
+        fn bearer_token(&self) -> Option<&str> { None }
+        fn http_client(&self) -> &reqwest::Client { &self.sse_client }
+    }
+
+    /// Globally unique-per-test instance id so concurrent tests don't share
+    /// the /tmp/collab-debug-<instance>.txt artifact.
+    fn unique_id(prefix: &str) -> String {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        format!("test-{}-{}-{}", prefix, std::process::id(), COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn debug_path(instance_id: &str) -> String {
+        format!("/tmp/collab-debug-{}.txt", instance_id)
+    }
+
+    /// Write a small bash script in `dir` and return its absolute path. The body
+    /// is wrapped in a shebang and made executable.
+    fn write_script(dir: &TempDir, name: &str, body: &str) -> String {
+        let path = dir.path().join(name);
+        std::fs::write(&path, format!("#!/usr/bin/env bash\n{}\n", body)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    fn make_harness(
+        cli_template: &str,
+        workdir: &Path,
+        fake: Arc<dyn CollabApi>,
+        instance_id: &str,
+    ) -> WorkerHarness {
+        WorkerHarness::new_with_api(
+            fake,
+            instance_id.into(),
+            workdir.to_path_buf(),
+            String::new(),
+            Some(cli_template.into()),
+            None,
+            true,
+            10,
+            vec![],
+            vec![],
+        )
+    }
+
+    fn user_msg(content: &str) -> Message {
+        Message {
+            sender: "human".into(),
+            recipient: "test-worker".into(),
+            content: content.into(),
+            hash: format!("hash-{}", content.len()),
+            timestamp: chrono::Utc::now(),
+        }
+    }
+
+    // ─── Tests ────────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn spawn_cli_handles_valid_json_response() {
+        let id = unique_id("valid-json");
+        let dir = TempDir::new().unwrap();
+        let script = write_script(&dir, "ok.sh",
+            r#"printf '%s' '{"response":"hello","continue":false}'"#);
+        let fake = FakeApi::new();
+        let harness = make_harness(&script, dir.path(), fake.clone() as Arc<dyn CollabApi>, &id);
+
+        let did_continue = harness.spawn_cli(&[user_msg("hi")], false).await.unwrap();
+
+        assert!(!did_continue);
+        assert_eq!(fake.added_messages(), vec![("human".into(), "hello".into())]);
+        assert!(!Path::new(&debug_path(&id)).exists(), "no debug file on success");
+    }
+
+    /// REGRESSION: JSON-parse-fail used to write a debug dump that the unconditional
+    /// success-cleanup at the end of process_messages would immediately wipe.
+    /// The error log said "Raw dumped to..." but the file never existed.
+    #[tokio::test]
+    async fn spawn_cli_persists_debug_on_json_parse_fail() {
+        let id = unique_id("json-fail");
+        let dir = TempDir::new().unwrap();
+        // Looks like JSON (has "response" key + brace) but unparseable
+        let script = write_script(&dir, "bad.sh",
+            r#"printf '%s' '{"response": "broken because no closing'"#);
+        let fake = FakeApi::new();
+        let harness = make_harness(&script, dir.path(), fake.clone() as Arc<dyn CollabApi>, &id);
+
+        let _ = harness.spawn_cli(&[user_msg("hi")], false).await;
+
+        let path = debug_path(&id);
+        assert!(Path::new(&path).exists(),
+            "JSON-parse-fail must leave debug file — was being clobbered by cleanup");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("json-parse-failed"));
+        assert!(fake.added_messages().is_empty(), "no message should be sent when JSON parse fails");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A successful invocation following a failed one must clear the stale debug file.
+    #[tokio::test]
+    async fn spawn_cli_clears_stale_debug_on_subsequent_success() {
+        let id = unique_id("clear-debug");
+        let dir = TempDir::new().unwrap();
+        let bad = write_script(&dir, "bad.sh", r#"printf '%s' '{"response": "broken'"#);
+        let good = write_script(&dir, "good.sh",
+            r#"printf '%s' '{"response":"ok","continue":false}'"#);
+        let fake = FakeApi::new();
+        let path = debug_path(&id);
+
+        let h_bad = make_harness(&bad, dir.path(), fake.clone() as Arc<dyn CollabApi>, &id);
+        let _ = h_bad.spawn_cli(&[user_msg("hi")], false).await;
+        assert!(Path::new(&path).exists(), "first call should leave debug");
+
+        let h_good = make_harness(&good, dir.path(), fake.clone() as Arc<dyn CollabApi>, &id);
+        let _ = h_good.spawn_cli(&[user_msg("again")], false).await;
+        assert!(!Path::new(&path).exists(),
+            "successful follow-up should clear the stale debug file");
+    }
+
+    /// REGRESSION: cli_templates like `OLLAMA_HOST=... script` were silently failing
+    /// because env-prefix wasn't being parsed — the literal string was spawned as a binary.
+    #[tokio::test]
+    async fn spawn_cli_applies_env_prefix() {
+        let id = unique_id("env-prefix");
+        let dir = TempDir::new().unwrap();
+        let script = write_script(&dir, "echo-env.sh",
+            r#"printf '{"response":"%s","continue":false}' "$MY_TEST_VAR""#);
+        let fake = FakeApi::new();
+        let template = format!("MY_TEST_VAR=hello-from-env {}", script);
+        let harness = make_harness(&template, dir.path(), fake.clone() as Arc<dyn CollabApi>, &id);
+
+        harness.spawn_cli(&[user_msg("go")], false).await.unwrap();
+
+        let sent = fake.added_messages();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1, "hello-from-env",
+            "env-prefix on cli_template must reach the subprocess");
+    }
+
+    /// COLLAB_* env vars must be stripped from the subprocess. We feed them in
+    /// via the cli_template's env-prefix mechanism (so the spawn sees them in
+    /// its env list before strip), then assert the script doesn't see them.
+    #[tokio::test]
+    async fn spawn_cli_strips_collab_env_vars() {
+        let id = unique_id("env-strip");
+        let dir = TempDir::new().unwrap();
+        let script = write_script(&dir, "echo-collab-env.sh",
+            r#"printf '{"response":"INST=%s SERVER=%s TOKEN=%s","continue":false}' \
+                "${COLLAB_INSTANCE:-stripped}" "${COLLAB_SERVER:-stripped}" "${COLLAB_TOKEN:-stripped}""#);
+        let fake = FakeApi::new();
+        // env-prefix puts them on cmd.env(); spawn_cli's env_remove must override.
+        let template = format!(
+            "COLLAB_INSTANCE=should-be-stripped COLLAB_SERVER=should-be-stripped COLLAB_TOKEN=should-be-stripped {}",
+            script
+        );
+        let harness = make_harness(&template, dir.path(), fake.clone() as Arc<dyn CollabApi>, &id);
+
+        harness.spawn_cli(&[user_msg("go")], false).await.unwrap();
+
+        let sent = fake.added_messages();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].1, "INST=stripped SERVER=stripped TOKEN=stripped",
+            "all three COLLAB_* vars must be stripped, even if env-prefix tries to set them");
+    }
+
+    /// REGRESSION: spawn failures used to log to stderr only; no debug file produced.
+    #[tokio::test]
+    async fn spawn_cli_writes_debug_on_spawn_fail() {
+        let id = unique_id("spawn-fail");
+        let dir = TempDir::new().unwrap();
+        let fake = FakeApi::new();
+        let harness = make_harness("/no/such/binary {prompt}", dir.path(), fake as Arc<dyn CollabApi>, &id);
+
+        let result = harness.spawn_cli(&[user_msg("hi")], false).await;
+
+        assert!(result.is_err());
+        let path = debug_path(&id);
+        assert!(Path::new(&path).exists(), "spawn failure must produce debug file");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("spawn-failed"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// REGRESSION: timeouts used to leave the child running and produce no diagnostic.
+    /// kill_on_drop + tokio::timeout + debug write all need to compose.
+    #[tokio::test]
+    async fn spawn_cli_writes_debug_on_timeout_and_kills_child() {
+        let id = unique_id("timeout");
+        let dir = TempDir::new().unwrap();
+        // Sentinel file the child writes AFTER its sleep — if it survives the
+        // timeout, the file appears.
+        let sentinel = dir.path().join("survived.txt");
+        let script = write_script(&dir, "slow.sh",
+            &format!("sleep 30 && touch {}", sentinel.display()));
+        let fake = FakeApi::new();
+        let harness = make_harness(&script, dir.path(), fake as Arc<dyn CollabApi>, &id)
+            .with_cli_timeout_secs(1);
+
+        let result = harness.spawn_cli(&[user_msg("hi")], false).await;
+
+        assert!(result.is_err(), "should error on timeout");
+        let path = debug_path(&id);
+        assert!(Path::new(&path).exists(), "timeout must produce debug file");
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("timeout"));
+        // Give the would-be sleep enough wall clock to have created the sentinel
+        // if kill_on_drop didn't kick in; assert it never appears.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(!sentinel.exists(),
+            "child must be killed on timeout (kill_on_drop) — sentinel would only exist if it ran to completion");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// REGRESSION: Light tier was strip-everything-but-the-current-message, causing
+    /// PM to ask "what was I asking about?" on conversational short replies because
+    /// her own prior outgoing message wasn't visible.
+    #[tokio::test]
+    async fn build_prompt_light_includes_recent_history() {
+        let id = unique_id("light-history");
+        let dir = TempDir::new().unwrap();
+        let fake = FakeApi::new();
+        fake.push_history(&id, "human", "what is the actual deadline?");
+        let harness = make_harness("noop", dir.path(), fake as Arc<dyn CollabApi>, &id);
+
+        let prompt = harness.build_prompt(&[user_msg("how TF do I know?")], false).await.unwrap();
+
+        assert!(prompt.contains("Recent history"),
+            "Light prompt must include a recent-history window (regression: amnesia on short replies)");
+        assert!(prompt.contains("what is the actual deadline?"),
+            "history entry must appear in the prompt");
+    }
+
+    /// Delegate target should not also receive a duplicate `response` message.
+    /// The delegate handoff already creates a todo + notification; sending the
+    /// `response` field on top would double-message them.
+    #[tokio::test]
+    async fn spawn_cli_dedupes_response_to_delegate_target() {
+        let id = unique_id("dedupe");
+        let dir = TempDir::new().unwrap();
+        let json = r#"{"response":"got it","delegate":[{"to":"@human","task":"do the thing"}],"continue":false}"#;
+        let script = write_script(&dir, "delegate.sh", &format!("printf '%s' '{}'", json));
+        let fake = FakeApi::new();
+        let harness = make_harness(&script, dir.path(), fake.clone() as Arc<dyn CollabApi>, &id);
+
+        harness.spawn_cli(&[user_msg("please")], false).await.unwrap();
+
+        // The "response" field text should not be sent to @human as a separate message
+        // because @human is already a delegate target.
+        let response_dupes_to_human: Vec<_> = fake.added_messages()
+            .into_iter()
+            .filter(|(r, c)| r == "human" && c == "got it")
+            .collect();
+        assert!(response_dupes_to_human.is_empty(),
+            "response field must not be sent as a separate message to a delegate target");
+        // The todo itself must still be created
+        assert_eq!(fake.added_todos(), vec![("human".into(), "do the thing".into())]);
     }
 }
