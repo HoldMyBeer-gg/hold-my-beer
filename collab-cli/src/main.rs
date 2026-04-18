@@ -715,60 +715,18 @@ async fn main() -> Result<()> {
     }
 
     if matches!(cli.command, Commands::Usage) {
-        let log_path = find_manifest()
-            .map(|p| p.parent().unwrap().join("usage.log"))
-            .unwrap_or_else(|_| std::path::PathBuf::from(".collab/usage.log"));
-
-        if !log_path.exists() {
-            println!("No usage data yet. Workers log to {} after each invocation.", log_path.display());
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&log_path)?;
-        // (input_tokens, output_tokens, duration_secs, call_count, cli_name, light_calls, full_calls, cost_usd)
-        let mut per_worker: std::collections::HashMap<String, (u64, u64, u64, u32, String, u32, u32, f64)> = std::collections::HashMap::new();
-        let mut total_input: u64 = 0;
-        let mut total_output: u64 = 0;
-        let mut total_duration: u64 = 0;
-        let mut total_calls: u32 = 0;
-        let mut total_light: u32 = 0;
-        let mut total_full: u32 = 0;
-        let mut total_cost: f64 = 0.0;
-        let mut any_cost = false;
-
-        for line in content.lines() {
-            if line.len() > 1024 || line.is_empty() { continue; }
-            let cols: Vec<&str> = line.split('\t').collect();
-            if cols.len() >= 5 {
-                let worker = cols[1];
-                if worker.len() > 64 || !worker.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-                    continue;
-                }
-                let worker = worker.to_string();
-                let dur: u64 = cols[2].parse().unwrap_or(0);
-                let inp: u64 = cols[3].parse().unwrap_or(0);
-                let out: u64 = cols[4].parse().unwrap_or(0);
-                let model = if cols.len() >= 6 { cols[5].to_string() } else { "?".to_string() };
-                let tier = if cols.len() >= 7 { cols[6] } else { "full" };
-                let cost: f64 = if cols.len() >= 8 { cols[7].parse().unwrap_or(0.0) } else { 0.0 };
-                if cost > 0.0 { any_cost = true; }
-
-                total_input += inp;
-                total_output += out;
-                total_duration += dur;
-                total_calls += 1;
-                total_cost += cost;
-                if tier == "light" { total_light += 1; } else { total_full += 1; }
-
-                let entry = per_worker.entry(worker).or_insert((0, 0, 0, 0, model.clone(), 0, 0, 0.0));
-                entry.0 += inp;
-                entry.1 += out;
-                entry.2 += dur;
-                entry.3 += 1;
-                entry.4 = model;
-                if tier == "light" { entry.5 += 1; } else { entry.6 += 1; }
-                entry.7 += cost;
+        let client = CollabClient::new(&server, "", token.as_deref());
+        let usage = match client.fetch_usage().await {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("Failed to fetch usage from {}: {}", server, e);
+                return Ok(());
             }
+        };
+
+        if usage.workers.is_empty() {
+            println!("No usage data yet. Workers report to the server after each invocation.");
+            return Ok(());
         }
 
         let fmt_time = |secs: u64| -> String {
@@ -779,42 +737,62 @@ async fn main() -> Result<()> {
             else { format!("   {:02}:{:02}", m, s) }
         };
 
+        let any_cost = usage.total_cost_usd > 0.0;
         let header = if any_cost { "Token usage (actual)\n" } else { "Token usage (estimated ~4 chars/token)\n" };
         println!("{}", header);
 
-        // Fetch todo counts per worker from server
-        let client = CollabClient::new(&server, "", token.as_deref());
+        // Todo counts per worker — same call pattern the old path used.
         let mut todo_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for worker_name in per_worker.keys() {
-            if let Ok(todos) = client.fetch_todos(worker_name).await {
-                todo_counts.insert(worker_name.clone(), todos.len());
+        for row in &usage.workers {
+            if let Ok(todos) = client.fetch_todos(&row.worker).await {
+                todo_counts.insert(row.worker.clone(), todos.len());
             }
         }
         let total_todos: usize = todo_counts.values().sum();
-
-        let mut workers: Vec<_> = per_worker.iter().collect();
-        workers.sort_by(|a, b| (b.1.0 + b.1.1).cmp(&(a.1.0 + a.1.1)));
 
         let cost_col = if any_cost { "  Cost" } else { "" };
         println!("{:<20} {:>8} {:>8} {:>6} {:>8}  {:<10} {:<10} {:<6}{}", "Worker", "Input", "Output", "Calls", "Time", "CLI", "Tiers", "Todos", cost_col);
         println!("{}", "─".repeat(if any_cost { 96 } else { 88 }));
 
-        for (name, (inp, out, dur, calls, model, light, full, cost)) in &workers {
-            let tier_str = format!("{}F/{}L", full, light);
-            let todo_str = match todo_counts.get(*name) {
+        for row in &usage.workers {
+            let tier_str = format!("{}F/{}L", row.full_calls, row.light_calls);
+            let todo_str = match todo_counts.get(&row.worker) {
                 Some(0) => "—".to_string(),
                 Some(n) => format!("{}", n),
                 None => "?".to_string(),
             };
-            let cost_str = if any_cost { format!("  ${:.4}", cost) } else { String::new() };
-            println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}", name, inp / 1000, out / 1000, calls, fmt_time(*dur), model, tier_str, todo_str, cost_str);
+            let cost_str = if any_cost { format!("  ${:.4}", row.cost_usd) } else { String::new() };
+            let cli_name = if row.cli.is_empty() { "?" } else { row.cli.as_str() };
+            println!(
+                "{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}",
+                row.worker,
+                row.input_tokens / 1000,
+                row.output_tokens / 1000,
+                row.calls,
+                fmt_time(row.duration_secs),
+                cli_name,
+                tier_str,
+                todo_str,
+                cost_str,
+            );
         }
 
         println!("{}", "─".repeat(if any_cost { 96 } else { 88 }));
-        let total_tier_str = format!("{}F/{}L", total_full, total_light);
+        let total_tier_str = format!("{}F/{}L", usage.total_full_calls, usage.total_light_calls);
         let total_todo_str = if total_todos > 0 { format!("{}", total_todos) } else { "—".to_string() };
-        let total_cost_str = if any_cost { format!("  ${:.4}", total_cost) } else { String::new() };
-        println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}", "TOTAL", total_input / 1000, total_output / 1000, total_calls, fmt_time(total_duration), "", total_tier_str, total_todo_str, total_cost_str);
+        let total_cost_str = if any_cost { format!("  ${:.4}", usage.total_cost_usd) } else { String::new() };
+        println!(
+            "{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}",
+            "TOTAL",
+            usage.total_input_tokens / 1000,
+            usage.total_output_tokens / 1000,
+            usage.total_calls,
+            fmt_time(usage.total_duration_secs),
+            "",
+            total_tier_str,
+            total_todo_str,
+            total_cost_str,
+        );
 
         return Ok(());
     }

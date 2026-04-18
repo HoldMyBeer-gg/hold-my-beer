@@ -1206,35 +1206,20 @@ Do NOT run any `collab` command in this session — the harness manages collab s
         let cost_str = cost_usd.map(|c| format!(", ${:.4}", c)).unwrap_or_default();
         self.log(&format!("done — {}s, {}+{} tokens{}", duration, log_input_tokens, log_output_tokens, cost_str));
 
-        // Append to usage log
-        let log_line = format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            Utc::now().format("%Y-%m-%dT%H:%M:%SZ"),
-            self.instance_id,
-            duration,
-            log_input_tokens,
-            log_output_tokens,
-            self.cli_template.split_whitespace().next().unwrap_or("unknown"),
-            tier,
-            cost_usd.map(|c| format!("{:.6}", c)).unwrap_or_default()
-        );
-        match crate::find_collab_dir_from(&self.workdir) {
-            Some(collab_dir) => {
-                let log_path = collab_dir.join("usage.log");
-                if let Err(e) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                    .and_then(|mut f| std::io::Write::write_all(&mut f, log_line.as_bytes()))
-                {
-                    self.log(&format!("warn: failed to append usage.log at {}: {}", log_path.display(), e));
-                }
-            }
-            None => {
-                self.log(&format!(
-                    "warn: no .collab/workers.json found walking up from {} — usage not recorded",
-                    self.workdir.display()
-                ));
-            }
+        // Report usage delta to server — authoritative running totals.
+        let cli_name = self.cli_template.split_whitespace().next().unwrap_or("unknown");
+        let tier_str = tier.to_string();
+        let report = crate::client::UsageReport {
+            worker: &self.instance_id,
+            duration_secs: duration,
+            input_tokens: log_input_tokens,
+            output_tokens: log_output_tokens,
+            tier: &tier_str,
+            cost_usd,
+            cli: Some(cli_name),
+        };
+        if let Err(e) = self.client.report_usage(&report).await {
+            self.log(&format!("warn: failed to report usage to server: {}", e));
         }
 
         // Clean up temp files from this invocation
@@ -1770,6 +1755,7 @@ mod integration {
             Ok(crate::client::LeaseOutcome::Held { taken_over: false })
         }
         async fn release_lease(&self, _pid: i64) -> Result<()> { Ok(()) }
+        async fn report_usage(&self, _report: &crate::client::UsageReport<'_>) -> Result<()> { Ok(()) }
         fn base_url(&self) -> &str { "http://fake" }
         fn bearer_token(&self) -> Option<&str> { None }
         fn http_client(&self) -> &reqwest::Client { &self.sse_client }

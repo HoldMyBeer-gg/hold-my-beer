@@ -241,6 +241,29 @@ async fn apply_team_schema(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    // Running per-(team, worker) usage totals. Teamless (legacy) traffic
+    // coalesces team_id to '' so the primary key still distinguishes workers.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS team_usage_totals (
+            team_id TEXT NOT NULL DEFAULT '',
+            worker TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            duration_secs INTEGER NOT NULL DEFAULT 0,
+            calls INTEGER NOT NULL DEFAULT 0,
+            light_calls INTEGER NOT NULL DEFAULT 0,
+            full_calls INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL NOT NULL DEFAULT 0,
+            cli TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (team_id, worker)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
 }
 

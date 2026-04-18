@@ -1583,138 +1583,98 @@ function toggleUsage() {
 }
 
 async function fetchUsage() {
-  if (!cfg.projectDir) { renderUsage([], null); return; }
-  const logPath = cfg.projectDir + '/.collab/usage.log';
-  let text = '';
+  if (!cfg.serverUrl) { renderUsage(null); return; }
   try {
-    const exists = await invoke('path_exists', { path: logPath });
-    if (!exists) { renderUsage([], null); return; }
-    text = await invoke('read_file', { path: logPath });
+    const url = cfg.serverUrl.replace(/\/+$/, '') + '/usage';
+    const headers = cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {};
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) { renderUsage(null); return; }
+    const data = await resp.json();
+    renderUsage(data);
   } catch (e) {
-    renderUsage([], null);
-    return;
+    renderUsage(null);
   }
-  const rows = parseUsageLog(text);
-  renderUsage(rows, text);
 }
 
-// TSV columns: ts \t worker \t duration_s \t in_tokens \t out_tokens \t cli \t tier \t cost
-function parseUsageLog(text) {
-  const out = [];
-  for (const line of text.split('\n')) {
-    if (!line || line.length > 1024) continue;
-    const c = line.split('\t');
-    if (c.length < 5) continue;
-    const worker = c[1];
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(worker)) continue;
-    out.push({
-      ts:       c[0],
-      worker,
-      duration: parseInt(c[2], 10) || 0,
-      inTok:    parseInt(c[3], 10) || 0,
-      outTok:   parseInt(c[4], 10) || 0,
-      cli:      c[5] || '?',
-      tier:     c[6] || 'full',
-      cost:     parseFloat(c[7] || '0') || 0,
-    });
-  }
-  return out;
-}
-
-function renderUsage(rows, _rawText) {
+function renderUsage(data) {
   const inner = document.getElementById('usage-inner');
   const totalEl = document.getElementById('usage-total');
   if (!inner) return;
   inner.innerHTML = '';
 
-  if (!rows.length) {
+  const workers = (data && Array.isArray(data.workers)) ? data.workers : [];
+  if (!workers.length) {
     const empty = document.createElement('div');
     empty.className = 'usage-empty';
-    empty.textContent = cfg.projectDir
-      ? 'No usage recorded yet. Workers append here after each turn.'
-      : 'No project directory set.';
+    empty.textContent = data
+      ? 'No usage recorded yet. Workers report to the server after each turn.'
+      : 'Could not reach the server.';
     inner.appendChild(empty);
     if (totalEl) totalEl.textContent = '—';
     return;
   }
 
-  let totalIn = 0, totalOut = 0, totalCost = 0, totalDur = 0;
-  for (const r of rows) {
-    totalIn   += r.inTok;
-    totalOut  += r.outTok;
-    totalCost += r.cost;
-    totalDur  += r.duration;
-  }
+  const totalIn = data.total_input_tokens || 0;
+  const totalOut = data.total_output_tokens || 0;
+  const totalDur = data.total_duration_secs || 0;
+  const totalCost = data.total_cost_usd || 0;
+  const totalCalls = data.total_calls || 0;
+
   if (totalEl) {
     const costStr = totalCost > 0 ? ` · $${totalCost.toFixed(4)}` : '';
     totalEl.textContent =
-      `${rows.length} call${rows.length !== 1 ? 's' : ''} · ` +
+      `${totalCalls} call${totalCalls !== 1 ? 's' : ''} · ` +
       `${fmtTokens(totalIn + totalOut)} toks · ` +
       `${fmtDuration(totalDur)}${costStr}`;
   }
 
-  // Newest last so the viewport scrolls to the latest entry naturally.
-  rows.slice(-200).forEach(r => {
+  // One row per worker — heaviest first (server already sorts by token volume).
+  workers.forEach(w => {
     const row = document.createElement('div');
     row.className = 'usage-row';
 
-    const t = document.createElement('span');
-    t.className = 'usage-time';
-    t.textContent = fmtTime(r.ts);
-    row.appendChild(t);
-
-    const w = document.createElement('span');
-    w.className = 'usage-worker';
-    w.textContent = r.worker;
-    w.style.color = COLORS[getColor(r.worker)];
-    row.appendChild(w);
+    const nameEl = document.createElement('span');
+    nameEl.className = 'usage-worker';
+    nameEl.textContent = w.worker;
+    nameEl.style.color = COLORS[getColor(w.worker)];
+    row.appendChild(nameEl);
 
     const toks = document.createElement('span');
     toks.className = 'usage-toks';
-    toks.textContent = `${fmtTokens(r.inTok)} in · ${fmtTokens(r.outTok)} out`;
+    toks.textContent = `${fmtTokens(w.input_tokens)} in · ${fmtTokens(w.output_tokens)} out`;
     row.appendChild(toks);
+
+    const calls = document.createElement('span');
+    calls.className = 'usage-time';
+    calls.textContent = `${w.calls} call${w.calls !== 1 ? 's' : ''} (${w.full_calls}F/${w.light_calls}L)`;
+    row.appendChild(calls);
 
     const dur = document.createElement('span');
     dur.className = 'usage-dur';
-    dur.textContent = fmtDuration(r.duration);
+    dur.textContent = fmtDuration(w.duration_secs);
     row.appendChild(dur);
 
     const cost = document.createElement('span');
-    cost.className = 'usage-cost' + (r.cost > 0 ? '' : ' zero');
-    cost.textContent = r.cost > 0 ? `$${r.cost.toFixed(4)}` : '—';
+    cost.className = 'usage-cost' + (w.cost_usd > 0 ? '' : ' zero');
+    cost.textContent = w.cost_usd > 0 ? `$${w.cost_usd.toFixed(4)}` : '—';
     row.appendChild(cost);
 
     inner.appendChild(row);
   });
 
-  // Per-worker summary footer
-  const workerMap = {};
-  for (const r of rows) {
-    if (!workerMap[r.worker]) workerMap[r.worker] = { inTok: 0, outTok: 0, cost: 0, duration: 0, calls: 0 };
-    workerMap[r.worker].inTok    += r.inTok;
-    workerMap[r.worker].outTok   += r.outTok;
-    workerMap[r.worker].cost     += r.cost;
-    workerMap[r.worker].duration += r.duration;
-    workerMap[r.worker].calls++;
-  }
-  const workerNames = Object.keys(workerMap);
-  if (workerNames.length > 1 || rows.length > 0) {
-    const sep = document.createElement('div');
-    sep.className = 'usage-sep';
-    inner.appendChild(sep);
+  const sep = document.createElement('div');
+  sep.className = 'usage-sep';
+  inner.appendChild(sep);
 
-    const totalRow = document.createElement('div');
-    totalRow.className = 'usage-row usage-totals-row';
-    totalRow.innerHTML =
-      `<span class="usage-time" style="color:var(--dim-text)">TOTAL</span>` +
-      `<span class="usage-worker" style="color:var(--dim-text)">${rows.length} call${rows.length !== 1 ? 's' : ''}</span>` +
-      `<span class="usage-toks">${fmtTokens(totalIn)} in · ${fmtTokens(totalOut)} out</span>` +
-      `<span class="usage-dur">${fmtDuration(totalDur)}</span>` +
-      `<span class="usage-cost${totalCost > 0 ? '' : ' zero'}">${totalCost > 0 ? '$' + totalCost.toFixed(4) : '—'}</span>`;
-    inner.appendChild(totalRow);
-  }
-
-  inner.scrollTop = inner.scrollHeight;
+  const totalRow = document.createElement('div');
+  totalRow.className = 'usage-row usage-totals-row';
+  totalRow.innerHTML =
+    `<span class="usage-worker" style="color:var(--dim-text)">TOTAL</span>` +
+    `<span class="usage-toks">${fmtTokens(totalIn)} in · ${fmtTokens(totalOut)} out</span>` +
+    `<span class="usage-time" style="color:var(--dim-text)">${totalCalls} call${totalCalls !== 1 ? 's' : ''}</span>` +
+    `<span class="usage-dur">${fmtDuration(totalDur)}</span>` +
+    `<span class="usage-cost${totalCost > 0 ? '' : ' zero'}">${totalCost > 0 ? '$' + totalCost.toFixed(4) : '—'}</span>`;
+  inner.appendChild(totalRow);
 }
 
 function fmtTokens(n) {
