@@ -52,7 +52,7 @@ fn collab() -> Command {
 ///
 /// This is the test that would have caught "collab start all → Manifest
 /// not found" before shipping it to a user.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_adopt_then_start_finds_team_manifest() {
     let server = start_server().await;
 
@@ -130,7 +130,7 @@ async fn migration_adopt_then_start_finds_team_manifest() {
 /// actually let it spawn long-running workers (no real CLI tool available
 /// in the test env), but we assert that manifest resolution succeeds —
 /// i.e., we get past the "Manifest not found" check.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_all_in_team_managed_dir_resolves_manifest() {
     let server = start_server().await;
     let tmp = TempDir::new().unwrap();
@@ -188,7 +188,7 @@ async fn start_all_in_team_managed_dir_resolves_manifest() {
 /// Verify `collab team adopt --mint-token` does the round-trip in one go,
 /// so a user migrating doesn't have to remember the two-step dance that
 /// tripped up the original migration.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adopt_with_mint_token_creates_team_on_server() {
     let server = start_server().await;
 

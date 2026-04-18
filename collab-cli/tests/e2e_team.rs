@@ -57,7 +57,7 @@ async fn admin_create_team(server: &str, name: &str) -> String {
     body["token"].as_str().unwrap().to_string()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn team_happy_path_init_messages_and_lease() {
     let server = start_server_in_process().await;
 
@@ -132,7 +132,7 @@ async fn team_happy_path_init_messages_and_lease() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cross_team_messages_stay_isolated() {
     let server = start_server_in_process().await;
     let token_blender = admin_create_team(&server, "blender").await;

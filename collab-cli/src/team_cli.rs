@@ -116,7 +116,17 @@ pub async fn show(
     }
     let resp = req.send().await?;
     if !resp.status().is_success() {
-        anyhow::bail!("lookup failed: HTTP {}", resp.status());
+        let status = resp.status();
+        if status.as_u16() == 403 {
+            let hint = if admin_token.map_or(false, |t| t.starts_with("tm_")) {
+                "Your COLLAB_TOKEN looks like a team token (tm_…), but `collab team show` needs an admin token. \
+                 Set COLLAB_ADMIN_TOKEN (adm_…) to the admin secret and retry."
+            } else {
+                "`collab team show` requires an admin token. Set COLLAB_ADMIN_TOKEN (adm_…) to the admin secret and retry."
+            };
+            anyhow::bail!("HTTP 403 Forbidden — {}", hint);
+        }
+        anyhow::bail!("lookup failed: HTTP {}", status);
     }
     let teams: Vec<TeamInfo> = resp.json().await?;
     let team = teams
