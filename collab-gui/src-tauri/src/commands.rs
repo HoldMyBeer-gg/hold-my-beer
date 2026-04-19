@@ -106,12 +106,19 @@ pub fn home_dir() -> Option<String> {
 
 // ─── Server lifecycle ─────────────────────────────────────────────────────────
 
+/// Spawn the bundled `collab-server` sidecar.
+///
+/// `admin_token` is the admin secret the GUI generated for this session —
+/// passed as `COLLAB_ADMIN_TOKEN` (highest priority in the server's token
+/// lookup) so it beats any stale `token = …` in `~/.collab.toml`. Workers
+/// later authenticate with the team token via their own `COLLAB_TOKEN`
+/// env; the two are deliberately distinct.
 #[tauri::command]
 pub async fn start_server(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     server_url: String,
-    token: String,
+    admin_token: String,
     project_dir: String,
 ) -> Result<(), String> {
     let port: u16 = server_url
@@ -148,7 +155,11 @@ pub async fn start_server(
         .shell()
         .sidecar("collab-server")
         .map_err(|e| format!("Could not locate collab-server sidecar: {e}"))?
-        .env("COLLAB_TOKEN", &token)
+        // COLLAB_ADMIN_TOKEN is the authoritative admin slot; server lookup
+        // priority is COLLAB_ADMIN_TOKEN > COLLAB_TOKEN > ~/.collab.toml, so
+        // setting it here wins even if the user's shell has a stale
+        // COLLAB_TOKEN or their ~/.collab.toml points at a different team.
+        .env("COLLAB_ADMIN_TOKEN", &admin_token)
         .env("COLLAB_HOST", "0.0.0.0")
         .args(["--port", &port.to_string()])
         .current_dir(cwd);

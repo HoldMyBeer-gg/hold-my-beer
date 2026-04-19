@@ -93,10 +93,13 @@ const CLI_TEMPLATES = {
     dashboardActive = true;
     showDashboard();
     // Start server in background — connectSSE (called by showDashboard)
-    // will keep retrying until the server is ready.
+    // will keep retrying until the server is ready. Admin token is
+    // generated fresh per session; the team token already lives in
+    // team_tokens on the server disk, so workers auth with cfg.token
+    // via their own envs, not via this startup parameter.
     invoke('start_server', {
       serverUrl:  cfg.serverUrl,
-      token:      cfg.token,
+      adminToken: generateHexToken(32),
       projectDir: cfg.projectDir,
     }).catch(e => toast('Server error: ' + e, true));
   } else {
@@ -216,15 +219,18 @@ function toggleS1Advanced() {
 }
 
 // Mint a team token against the currently-running server. Called from
-// doLaunch after start_server, so there IS a server to talk to. No admin
-// token is sent — the server allows /admin/teams without auth when it was
-// started without a configured COLLAB_TOKEN, which is the localhost
-// single-user setup the wizard produces.
-async function mintTeamTokenDuringLaunch() {
+// doLaunch after start_server, so there IS a server to talk to. The
+// Bearer token is the per-session admin secret the GUI generated when
+// spawning the server — server requires an admin token on /admin/teams
+// and this is the only one that exists for this session.
+async function mintTeamTokenDuringLaunch(adminToken) {
   const url = cfg.serverUrl.replace(/\/+$/, '') + '/admin/teams';
   const resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${adminToken}`,
+    },
     body: JSON.stringify({ name: cfg.teamName }),
   });
   if (resp.status === 409) {
@@ -414,6 +420,14 @@ function _diagBanner(msg, kind) {
   el.textContent = msg;
 }
 
+// 32-byte hex token. Used for the per-session admin secret the GUI hands
+// the collab-server sidecar at startup; never persisted, never shown.
+function generateHexToken(bytes = 32) {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Convenience: read a team token from the clipboard. Saves the user a
 // paste-into-masked-field step, and flips the field visible briefly so
 // they can verify they got the right one.
@@ -570,6 +584,14 @@ async function doLaunch() {
     if (row) row[1] = v; else envs.push([k, v]);
   };
 
+  // Per-launch admin secret. The server refuses to start without an admin
+  // token, and we need to be the one that holds it so we can hit
+  // /admin/teams during the mint step. Never saved — regenerated every
+  // launch. Equivalent to the human typing `COLLAB_ADMIN_TOKEN=...
+  // collab-server` in a terminal, except the human doesn't have to know
+  // about any of it.
+  const sessionAdminToken = generateHexToken(32);
+
   // Step 1: Write team.yml. Skip the write when the current wizard state
   // exactly matches what's on disk (so a re-launch is a no-op), but
   // otherwise always write — the user went through the wizard on purpose.
@@ -604,12 +626,18 @@ async function doLaunch() {
   // team (e.g. a mac worker connecting to a Windows host over Tailscale) or
   // simply re-launching against a server that's already up. Either way,
   // spawning a new one on top would fight for the port and break auth.
+  //
+  // Probe bearer: use the team token if we have one (re-launch / joiner
+  // case) or the fresh session admin token if we don't (first-launch
+  // case — an existing server would reject this, correctly telling us
+  // there's a conflict we need to surface).
   setLaunchItem('li-server', 'running');
   let serverAlreadyRunning = false;
   try {
     const probeUrl = cfg.serverUrl.replace(/\/+$/, '') + '/';
+    const probeBearer = cfg.token || sessionAdminToken;
     const probe = await fetch(probeUrl, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
+      headers: { Authorization: `Bearer ${probeBearer}` },
       signal: AbortSignal.timeout(2500),
     });
     if (probe.status === 200) {
@@ -639,7 +667,7 @@ async function doLaunch() {
     try {
       await invoke('start_server', {
         serverUrl:  cfg.serverUrl,
-        token:      cfg.token,
+        adminToken: sessionAdminToken,
         projectDir: cfg.projectDir,
       });
       // Give the server a moment to start
@@ -662,7 +690,7 @@ async function doLaunch() {
   if (!cfg.token) {
     appendLaunchLog(`Minting team token for "${cfg.teamName}"…`, false);
     try {
-      cfg.token = await mintTeamTokenDuringLaunch();
+      cfg.token = await mintTeamTokenDuringLaunch(sessionAdminToken);
       setEnv('COLLAB_TOKEN', cfg.token);
       appendLaunchLog('✓ Team token minted', false);
     } catch (e) {
