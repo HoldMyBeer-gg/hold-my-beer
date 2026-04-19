@@ -28,7 +28,7 @@
 
   <div class="wiz-steps-wrap">
 
-      <!-- ── Step 1: Tokens + identity ────────────────────────────────── -->
+      <!-- ── Step 1: Team name + identity ─────────────────────────────── -->
       <div class="step active" id="step-1">
         <div class="step-icon">🍺</div>
         <h1 class="step-title">Hold My Beer</h1>
@@ -41,36 +41,29 @@
           </div>
 
           <div class="field">
-            <label for="s1-admin-token">Admin Token <span class="field-optional">(for creating a team)</span></label>
-            <div class="token-row">
-              <input id="s1-admin-token" class="inp inp-mono" type="password" placeholder="adm_… or legacy admin secret" autocomplete="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" data-bwignore="true">
-              <button class="btn btn-ghost btn-sm" id="btn-gen-admin-token" title="Generate a secure random admin token">Generate</button>
-            </div>
-            <div class="hint-box u-mt-4">Needed only to create or rotate teams. Set as <code>COLLAB_ADMIN_TOKEN</code> on the server.</div>
-          </div>
-
-          <div class="field">
-            <label for="s1-team-name">Team</label>
-            <div class="token-row">
-              <input id="s1-team-name" class="inp inp-mono" type="text" placeholder="my-team" autocomplete="off" spellcheck="false">
-              <button class="btn btn-ghost btn-sm" id="btn-create-team" title="Mint a team token by calling the admin API">Create team</button>
-            </div>
-            <div class="hint-box u-mt-4">Short name for this team (lowercase, letters/numbers/hyphens). Stored in <code>team.yml</code>.</div>
-          </div>
-
-          <div class="field">
-            <label for="s1-token">Team Token</label>
-            <div class="token-row">
-              <input id="s1-token" class="inp inp-mono" type="password" placeholder="tm_…" autocomplete="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" data-bwignore="true">
-              <button class="btn btn-ghost btn-sm" id="btn-paste-team-token" title="I already have a team token">Paste</button>
-            </div>
-            <div class="hint-box u-mt-4">Authenticates every worker. Click <strong>Create team</strong> above to mint a new one, or paste an existing <code>tm_…</code> token.</div>
+            <label for="s1-team-name">Team name</label>
+            <input id="s1-team-name" class="inp inp-mono" type="text" placeholder="my-team" autocomplete="off" spellcheck="false">
+            <div class="hint-box u-mt-4">Any label for this team — letters, numbers, dash/underscore. Stored in <code>team.yml</code>; the server mints a team token on launch.</div>
           </div>
 
           <div class="field">
             <label for="s1-identity">Your name in chat</label>
             <input id="s1-identity" class="inp" type="text" placeholder="e.g. human, lead, observer" autocomplete="off">
             <div class="hint-box">How you appear in the team roster when you send messages.</div>
+          </div>
+
+          <div class="field wc-advanced-wrap">
+            <button type="button" class="btn btn-ghost btn-xs" id="btn-s1-adv-toggle">▸ I already have a team token</button>
+            <div id="s1-advanced" hidden>
+              <div class="field u-mt-4">
+                <label for="s1-token">Team Token</label>
+                <div class="token-row">
+                  <input id="s1-token" class="inp inp-mono" type="password" placeholder="tm_…" autocomplete="off" spellcheck="false" data-1p-ignore="true" data-lpignore="true" data-bwignore="true">
+                  <button class="btn btn-ghost btn-sm" id="btn-paste-team-token" title="Paste from clipboard">Paste</button>
+                </div>
+                <div class="hint-box u-mt-4">Paste an existing <code>tm_…</code> token to join a team that was already created on this server. Leave empty to let the wizard mint a new one at launch.</div>
+              </div>
+            </div>
           </div>
         </div>
 

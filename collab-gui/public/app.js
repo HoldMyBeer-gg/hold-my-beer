@@ -16,7 +16,6 @@ const _isTauri = !!(_T && _T.core);
 // ── App state ─────────────────────────────────────────────────────────────────
 let cfg = {
   token:         '',   // team token (tm_…) — what workers auth with
-  adminToken:    '',   // admin secret (adm_… / legacy) — only for team creation/rotation
   teamName:      '',   // team.yml `team:` key
   serverUrl:     'http://localhost:8000',
   identity:      'human',
@@ -113,11 +112,19 @@ const CLI_TEMPLATES = {
 // ── Wizard helpers ────────────────────────────────────────────────────────────
 function prefillWizard() {
   if (cfg.token)       document.getElementById('s1-token').value       = cfg.token;
-  if (cfg.adminToken)  document.getElementById('s1-admin-token').value = cfg.adminToken;
   if (cfg.teamName)    document.getElementById('s1-team-name').value   = cfg.teamName;
   if (cfg.serverUrl)   document.getElementById('s1-url').value         = cfg.serverUrl;
   if (cfg.identity)    document.getElementById('s1-identity').value    = cfg.identity;
   if (cfg.projectDir)  document.getElementById('s2-dir').value         = cfg.projectDir;
+  // If there's a pre-existing team token, spring the advanced panel open
+  // so the human can see what's there instead of wondering why we didn't
+  // mint a fresh one.
+  if (cfg.token) {
+    const adv = document.getElementById('s1-advanced');
+    const btn = document.getElementById('btn-s1-adv-toggle');
+    if (adv) adv.hidden = false;
+    if (btn) btn.textContent = '▾ I already have a team token';
+  }
   renderWorkerCards();
 }
 
@@ -170,85 +177,69 @@ function backFromWizard() {
 }
 
 
-// Step 1 validation
-function step1Next() {
-  const token      = document.getElementById('s1-token').value.trim();
-  const adminToken = document.getElementById('s1-admin-token').value.trim();
-  const teamName   = document.getElementById('s1-team-name').value.trim();
-  const url        = document.getElementById('s1-url').value.trim();
-  const identity   = document.getElementById('s1-identity').value.trim();
+// Matches the server's is_valid_team_name: alphanumeric + `-`/`_`, 1–64 chars.
+// Letters are case-preserved — there's no reason to force lowercase here
+// when "D4LFG" or "BlenderRig" are perfectly valid team names upstream.
+const TEAM_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
-  if (!url)       { toast('Enter the server URL.', true); return; }
-  if (!teamName)  { toast('Enter a team name (or click Create team).', true); return; }
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(teamName)) {
-    toast('Team name must be lowercase letters/numbers/hyphens, starting with a letter or number.', true);
-    return;
-  }
-  if (!token) {
-    toast('Need a team token — click Create team, or paste an existing tm_… token.', true);
+// Step 1 validation. Requires URL + team name + chat identity. The team
+// token is optional — if empty, the wizard mints one against the live
+// server during Step 4 launch (no admin token needed when the server
+// runs with no COLLAB_TOKEN configured, which is the single-user case).
+function step1Next() {
+  const token    = document.getElementById('s1-token').value.trim();
+  const teamName = document.getElementById('s1-team-name').value.trim();
+  const url      = document.getElementById('s1-url').value.trim();
+  const identity = document.getElementById('s1-identity').value.trim();
+
+  if (!url)      { toast('Enter the server URL.', true); return; }
+  if (!teamName) { toast('Name this team.', true); return; }
+  if (!TEAM_NAME_RE.test(teamName)) {
+    toast('Team name: letters, numbers, dash, underscore. 1–64 chars.', true);
     return;
   }
   if (!identity) { toast('Enter your name for the chat.', true); return; }
 
-  cfg.token      = token;
-  cfg.adminToken = adminToken;  // may be empty — only required for admin ops
-  cfg.teamName   = teamName;
-  cfg.serverUrl  = url;
-  cfg.identity   = identity;
+  cfg.token     = token;          // may be empty — filled at launch if so
+  cfg.teamName  = teamName;
+  cfg.serverUrl = url;
+  cfg.identity  = identity;
   goStep(2);
 }
 
-// Mint a team via the admin API: POST /admin/teams with the admin token,
-// receive back a fresh tm_… team token, drop it into the team-token field.
-async function createTeam() {
-  const url        = document.getElementById('s1-url').value.trim().replace(/\/+$/, '');
-  const adminToken = document.getElementById('s1-admin-token').value.trim();
-  const teamName   = document.getElementById('s1-team-name').value.trim();
-  if (!url)        { toast('Enter the server URL first.', true); return; }
-  if (!adminToken) { toast('Enter an admin token first (the server\'s COLLAB_ADMIN_TOKEN).', true); return; }
-  if (!teamName)   { toast('Enter a team name to create.', true); return; }
-  if (!/^[a-z0-9][a-z0-9_-]*$/.test(teamName)) {
-    toast('Team name must be lowercase letters/numbers/hyphens.', true);
-    return;
+function toggleS1Advanced() {
+  const adv = document.getElementById('s1-advanced');
+  const btn = document.getElementById('btn-s1-adv-toggle');
+  if (!adv || !btn) return;
+  adv.hidden = !adv.hidden;
+  btn.textContent = (adv.hidden ? '▸' : '▾') + ' I already have a team token';
+}
+
+// Mint a team token against the currently-running server. Called from
+// doLaunch after start_server, so there IS a server to talk to. No admin
+// token is sent — the server allows /admin/teams without auth when it was
+// started without a configured COLLAB_TOKEN, which is the localhost
+// single-user setup the wizard produces.
+async function mintTeamTokenDuringLaunch() {
+  const url = cfg.serverUrl.replace(/\/+$/, '') + '/admin/teams';
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: cfg.teamName }),
+  });
+  if (resp.status === 409) {
+    throw new Error(
+      `A team named "${cfg.teamName}" already exists on this server. ` +
+      `Go back to Step 1, open "I already have a team token", and paste its tm_… token.`
+    );
   }
-  const btn = document.getElementById('btn-create-team');
-  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
-  try {
-    const resp = await fetch(url + '/admin/teams', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${adminToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name: teamName }),
-    });
-    if (resp.status === 401) {
-      toast('Server rejected the admin token (401). Is COLLAB_ADMIN_TOKEN set on the server?', true);
-      return;
-    }
-    if (resp.status === 403) {
-      toast('Forbidden (403) — this token isn\'t an admin token.', true);
-      return;
-    }
-    if (resp.status === 409) {
-      toast(`Team "${teamName}" already exists — paste its existing team token instead.`, true);
-      return;
-    }
-    if (!resp.ok) {
-      toast(`Create team failed: HTTP ${resp.status}`, true);
-      return;
-    }
-    const data = await resp.json();
-    if (!data.token) { toast('Server created the team but returned no token — check server logs.', true); return; }
-    document.getElementById('s1-token').value = data.token;
-    cfg.token    = data.token;
-    cfg.teamName = teamName;
-    toast(`Team "${teamName}" created — token filled in.`);
-  } catch (e) {
-    toast('Could not reach server: ' + e, true);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Create team'; }
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`Server rejected team mint (HTTP ${resp.status}): ${body.slice(0, 200)}`);
   }
+  const data = await resp.json();
+  if (!data.token) throw new Error('Server minted the team but returned no token.');
+  return data.token;
 }
 
 // Step 2 validation
@@ -407,23 +398,6 @@ function _diagBanner(msg, kind) {
   el.textContent = msg;
 }
 
-function generateHexToken(bytes = 32) {
-  const buf = new Uint8Array(bytes);
-  crypto.getRandomValues(buf);
-  return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
-}
-
-// Generate a fresh admin secret. Intended to be set as COLLAB_ADMIN_TOKEN on
-// the server; the human is responsible for wiring the server side. We prefix
-// with `adm_` so the CLI's token-kind detection shows "admin token".
-async function doGenerateAdminToken() {
-  const input = document.getElementById('s1-admin-token');
-  if (!input) return;
-  input.value = 'adm_' + generateHexToken(32);
-  input.type = 'text';
-  setTimeout(() => { input.type = 'password'; }, 4000);
-}
-
 // Convenience: read a team token from the clipboard. Saves the user a
 // paste-into-masked-field step, and flips the field visible briefly so
 // they can verify they got the right one.
@@ -566,15 +540,19 @@ async function doLaunch() {
   // of auto-jumping to the dashboard before they can read the error.
   let launchHadError = false;
 
-  // Workers auth with the team token via COLLAB_TOKEN. The admin token goes
-  // in as COLLAB_ADMIN_TOKEN only if the human supplied one — so non-admin
-  // setups don't mint a phantom admin context.
+  // Workers auth with the team token via COLLAB_TOKEN. If we don't have
+  // one yet (Step 1 left it blank), we mint one after the server starts
+  // — see the `if (!cfg.token)` block further down — then patch envs in
+  // place before subsequent collab invocations inherit them.
   const envs = [
     ['COLLAB_TOKEN', cfg.token],
     ['COLLAB_SERVER', cfg.serverUrl],
     ['COLLAB_INSTANCE', cfg.identity || 'gui'],
   ];
-  if (cfg.adminToken) envs.push(['COLLAB_ADMIN_TOKEN', cfg.adminToken]);
+  const setEnv = (k, v) => {
+    const row = envs.find(e => e[0] === k);
+    if (row) row[1] = v; else envs.push([k, v]);
+  };
 
   // Step 1: Write team.yml. Skip the write when the current wizard state
   // exactly matches what's on disk (so a re-launch is a no-op), but
@@ -655,6 +633,25 @@ async function doLaunch() {
     } catch (e) {
       setLaunchItem('li-server', 'error', e);
       appendLaunchLog('✗ ' + e, true);
+      resetLaunchBtn();
+      return;
+    }
+  }
+
+  // Mint a team token against the running server if the wizard didn't
+  // collect one. For localhost single-user this is the default path — the
+  // server starts with no COLLAB_TOKEN configured, so /admin/teams accepts
+  // the request without auth and hands back a tm_… token we can use
+  // everywhere downstream.
+  if (!cfg.token) {
+    appendLaunchLog(`Minting team token for "${cfg.teamName}"…`, false);
+    try {
+      cfg.token = await mintTeamTokenDuringLaunch();
+      setEnv('COLLAB_TOKEN', cfg.token);
+      appendLaunchLog('✓ Team token minted', false);
+    } catch (e) {
+      setLaunchItem('li-server', 'error', 'team mint failed');
+      appendLaunchLog('✗ ' + (e && e.message ? e.message : e), true);
       resetLaunchBtn();
       return;
     }
@@ -1870,8 +1867,8 @@ document.getElementById('todos-panel').classList.add('collapsed');
 // classic <script>. Expose a minimal bridge — token is intentionally excluded
 // from the getter to avoid leaking credentials via window inspection.
 window.__wizard = {
-  get cfg()        { const { token: _t, adminToken: _a, ...safe } = cfg; return safe; },
-  set cfg(v)       { const { token: _t, adminToken: _a, ...rest } = v; Object.assign(cfg, rest); },
+  get cfg()        { const { token: _t, ...safe } = cfg; return safe; },
+  set cfg(v)       { const { token: _t, ...rest } = v; Object.assign(cfg, rest); },
   get workers()    { return workers; },
   set workers(v)   { workers = v; },
   parseTeamOrWorkersYaml,
@@ -1909,8 +1906,7 @@ window.__wizard = {
   }, true);
 
   // Wizard — step navigation + actions
-  on('btn-gen-admin-token', 'click', doGenerateAdminToken);
-  on('btn-create-team',     'click', createTeam);
+  on('btn-s1-adv-toggle',   'click', toggleS1Advanced);
   on('btn-paste-team-token','click', doPasteTeamToken);
   on('btn-step1-next',      'click', step1Next);
   on('btn-browse',          'click', doBrowse);
