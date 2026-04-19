@@ -20,6 +20,25 @@ async function mockTauri(page, initial = {}) {
       config: init.config || {},        // what load_config returns
       calls:  [],                       // every invoke(cmd, args) recorded in order
       runCommandExit: 0,                // what run_command resolves to
+      fetches: [],                      // every fetch(url, init) recorded in order
+    };
+    // Stub fetch so the wizard's server probe + token mint don't escape the
+    // browser sandbox. Tauri test runs have no live collab-server; we fake
+    // /admin/teams responding with a canned tm_… token.
+    const origFetch = window.fetch;
+    window.fetch = async (url, init = {}) => {
+      window.__test.fetches.push({ url: String(url), init });
+      const u = String(url);
+      if (u.endsWith('/admin/teams') && (init.method || 'GET').toUpperCase() === 'POST') {
+        return new Response(
+          JSON.stringify({ team_id: 'mock-team', name: 'test-team', token: 'tm_mocktoken' }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (u.endsWith('/')) {
+        return new Response('', { status: 200 });
+      }
+      return origFetch ? origFetch(url, init) : new Response('not stubbed', { status: 500 });
     };
     const t = window.__test;
     window.__TAURI__ = {
@@ -65,13 +84,12 @@ async function setProjectDir(page, dir) {
   }, dir);
 }
 
-// Step 1 now takes two tokens + a team name. This helper fills the fields
-// + passes validation so later steps can render.
+// Step 1 takes URL + team name + identity. Team token is optional — the
+// wizard mints one at Step 4 against the running server. These tests
+// never reach Step 4's network code, so we leave the token blank.
 async function primeStep1(page) {
   await page.locator('#s1-url').fill('http://localhost:8000');
   await page.locator('#s1-team-name').fill('test-team');
-  await page.locator('#s1-admin-token').fill('adm_' + 'a'.repeat(32));
-  await page.locator('#s1-token').fill('tm_' + 'b'.repeat(32));
   await page.locator('#s1-identity').fill('tester');
   await page.evaluate(() => window.__wizard.step1Next());
 }
@@ -374,10 +392,12 @@ test.describe('doLaunch overwrite guard', () => {
       );
     });
     await page.evaluate(() => { window.__wizard.doLaunch(); });
+    // The stubbed fetch answers the server probe with 200, so doLaunch takes
+    // the "already running" branch and skips start_server — wait on the
+    // write_file call that the yaml update must produce instead.
     await page.waitForFunction(
-      () => window.__test.calls.some(c => c.cmd === 'start_server')
+      () => window.__test.calls.some(c => c.cmd === 'write_file' && c.args.path === '/tmp/proj/team.yml')
     );
-    // The file should reflect the rename.
     const contents = await page.evaluate(() => window.__test.files['/tmp/proj/team.yml']);
     expect(contents).toContain('name: webdev');
     expect(contents).not.toContain('name: alpha'); // the old name for index 0
