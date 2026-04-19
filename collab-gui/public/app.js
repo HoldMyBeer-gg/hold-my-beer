@@ -78,7 +78,11 @@ const CLI_TEMPLATES = {
     appendServerLog(p.line, p.stream === 'err');
   });
 
-  if (cfg.setupComplete && cfg.token) {
+  // teamName is required by the new schema — treat its absence as "config
+  // was saved by a pre-team version of the wizard" and drop back into Step 1
+  // so the human can mint a team token instead of auto-booting into a
+  // dashboard the backend no longer understands.
+  if (cfg.setupComplete && cfg.token && cfg.teamName) {
     // Already set up — hide wizard, show dashboard, and restart the server.
     // On a fresh app launch the server sidecar isn't running yet, so SSE
     // would loop on "reconnecting…" forever without this.
