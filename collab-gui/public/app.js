@@ -965,7 +965,19 @@ async function connectSSE() {
 }
 
 function scheduleSSEReconnect() {
-  const delay = Math.min(1000 * Math.pow(1.8, sseRetries) + Math.random() * 500, 30_000);
+  // Startup case dominates this code path: the server sidecar was spawned
+  // ~instantly ago and is still binding :8000, so the first few connects
+  // fail with "connection refused". Aggressive initial retries (≤500ms)
+  // close the gap — by the time we're 3–4 retries in, the server is ready.
+  //
+  // Steady-state-failure case (server crashed, network broken) doesn't
+  // benefit from sub-second retries; slow growth past retry ~6 walks the
+  // delay up to a reasonable 10s ceiling without the 30s plateau the
+  // previous schedule sat on.
+  const delay = Math.min(
+    200 * Math.pow(1.5, sseRetries) + Math.random() * 100,
+    10_000,
+  );
   sseRetries++;
   setTimeout(connectSSE, delay);
 }
@@ -975,7 +987,17 @@ function setConnStatus(up) {
   const label = document.getElementById('conn-label');
   if (!pill) return;
   pill.className = 'conn-pill ' + (up ? 'live' : 'dead');
-  if (label) label.textContent = up ? 'live' : 'reconnecting…';
+  // "connecting…" before we've ever been up; "reconnecting…" after we've
+  // had a live connection and it dropped. Cleaner UX than always showing
+  // "reconnecting…" during the initial sidecar boot.
+  if (label) {
+    if (up) {
+      label.textContent = 'live';
+      window.__sseEverLive = true;
+    } else {
+      label.textContent = window.__sseEverLive ? 'reconnecting…' : 'connecting…';
+    }
+  }
 }
 
 // ── Server status polling ─────────────────────────────────────────────────────
