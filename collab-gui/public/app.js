@@ -92,6 +92,14 @@ const CLI_TEMPLATES = {
     requestAnimationFrame(() => dash.classList.add('visible'));
     dashboardActive = true;
     showDashboard();
+    // Register the session FIRST so the Cmd+Q / close-window handler will
+    // warn about still-running workers even if start_server below races
+    // or errors out. Without this, a quick quit after the app reopens
+    // (before the server sidecar has finished starting) leaves worker
+    // daemons running silently with no prompt — which burns tokens. Must
+    // be awaited, not fire-and-forget.
+    try { await invoke('mark_session_active', { projectDir: cfg.projectDir }); } catch {}
+
     // Start server in background — connectSSE (called by showDashboard)
     // will keep retrying until the server is ready. Admin token is
     // generated fresh per session; the team token already lives in

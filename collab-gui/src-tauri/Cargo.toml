@@ -26,7 +26,7 @@ tauri-build = { version = "2", features = [] }
 # the GUI, add `features = ["devtools"]` here TEMPORARILY, don't commit.
 # Safari → Develop menu → Hold My Beer also works for poking at the
 # webview without needing this feature.
-tauri       = { version = "2" }
+tauri       = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"

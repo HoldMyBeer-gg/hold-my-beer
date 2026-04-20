@@ -1,10 +1,60 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
 use crate::{gui_config_path, legacy_gui_config_path, collab_toml_path, AppState, SavedConfig};
+
+/// User's interactive-shell PATH, cached at first use.
+///
+/// macOS GUI apps launched from Finder / `open` inherit launchd's minimal
+/// PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) — they do NOT read `.zshrc` /
+/// `.bash_profile` / `.zshenv`. Sidecars we spawn inherit that minimal
+/// PATH, and so do the worker daemons they fork, which means a worker
+/// trying to run `claude` fails with ENOENT because the real `claude`
+/// binary lives in `~/.local/bin` / `~/.cargo/bin` / `/opt/homebrew/bin`
+/// / etc. that the GUI has never heard of.
+///
+/// Fix: once, lazily, we shell out to the user's login shell in
+/// interactive mode (`$SHELL -lic 'printf %s "$PATH"'`) to resolve the
+/// PATH they actually see in a terminal, then inject it as `PATH` on
+/// every sidecar spawn so workers can find their CLI tools.
+///
+/// Falls back to the inherited PATH if anything goes wrong — no worse
+/// than the pre-fix behaviour.
+fn resolve_user_path() -> String {
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+            // `-l` login shell → reads zprofile/profile. `-i` interactive →
+            // reads zshrc/bashrc. Together they match what a fresh terminal
+            // sees. `printf %s` avoids a trailing newline.
+            let output = std::process::Command::new(&shell)
+                .args(["-lic", "printf %s \"$PATH\""])
+                .output();
+            let resolved = match output {
+                Ok(o) if o.status.success() => {
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
+                }
+                _ => String::new(),
+            };
+            let fallback = std::env::var("PATH").unwrap_or_default();
+            if resolved.is_empty() {
+                eprintln!("[path] resolving user shell PATH failed — falling back to inherited PATH");
+                fallback
+            } else if resolved == fallback {
+                // Already matches — no-op for people launching from a terminal.
+                resolved
+            } else {
+                eprintln!("[path] resolved user shell PATH: {resolved}");
+                resolved
+            }
+        })
+        .clone()
+}
 
 // ─── Config commands ──────────────────────────────────────────────────────────
 
@@ -161,6 +211,9 @@ pub async fn start_server(
         // COLLAB_TOKEN or their ~/.collab.toml points at a different team.
         .env("COLLAB_ADMIN_TOKEN", &admin_token)
         .env("COLLAB_HOST", "0.0.0.0")
+        // See `resolve_user_path` — without this, worker daemons spawned
+        // downstream inherit launchd's minimal PATH and can't find `claude`.
+        .env("PATH", resolve_user_path())
         .args(["--port", &port.to_string()])
         .current_dir(cwd);
 
@@ -307,6 +360,13 @@ pub async fn run_command(
         .args(&args);
     if let Some(dir) = &cwd {
         cmd = cmd.current_dir(PathBuf::from(dir));
+    }
+    // Inject the user's interactive shell PATH so worker daemons spawned
+    // by `collab start all` can find `claude` / `cursor` / `codex` / etc.
+    // Caller-supplied `envs` win if they include their own PATH.
+    let caller_overrides_path = envs.iter().any(|(k, _)| k == "PATH");
+    if !caller_overrides_path {
+        cmd = cmd.env("PATH", resolve_user_path());
     }
     for (k, v) in &envs {
         cmd = cmd.env(k, v);
