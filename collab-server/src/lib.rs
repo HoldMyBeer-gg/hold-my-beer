@@ -167,6 +167,13 @@ pub struct UsageReport {
     pub worker: String,
     pub duration_secs: u64,
     pub input_tokens: u64,
+    /// New tokens written to the prompt cache on this call.
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    /// Tokens served from the prompt cache on this call — the signal for
+    /// whether caching is doing any work.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     pub output_tokens: u64,
     pub tier: String,
     #[serde(default)]
@@ -179,6 +186,10 @@ pub struct UsageReport {
 pub struct UsageRow {
     pub worker: String,
     pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     pub output_tokens: u64,
     pub duration_secs: u64,
     pub calls: u64,
@@ -193,6 +204,10 @@ pub struct UsageRow {
 pub struct UsageResponse {
     pub workers: Vec<UsageRow>,
     pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_cache_creation_tokens: u64,
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
     pub total_output_tokens: u64,
     pub total_duration_secs: u64,
     pub total_calls: u64,
@@ -1451,6 +1466,9 @@ async fn report_usage(
     if payload.worker.len() > MAX_INSTANCE_ID_LEN || !is_valid_identifier(&payload.worker) {
         return Err(StatusCode::BAD_REQUEST);
     }
+    // `light` is accepted for back-compat with pre-tier-drop workers that may
+    // still be in-flight, but every new call reports `full` since Light tier
+    // no longer exists. `light_calls` stays as historical-only in the DB.
     let tier = match payload.tier.as_str() {
         "light" | "full" => payload.tier.as_str(),
         _ => return Err(StatusCode::BAD_REQUEST),
@@ -1465,24 +1483,29 @@ async fn report_usage(
     sqlx::query(
         r#"
         INSERT INTO team_usage_totals (
-            team_id, worker, input_tokens, output_tokens, duration_secs,
+            team_id, worker, input_tokens, cache_creation_tokens, cache_read_tokens,
+            output_tokens, duration_secs,
             calls, light_calls, full_calls, cost_usd, cli, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
         ON CONFLICT(team_id, worker) DO UPDATE SET
-            input_tokens  = input_tokens  + excluded.input_tokens,
-            output_tokens = output_tokens + excluded.output_tokens,
-            duration_secs = duration_secs + excluded.duration_secs,
-            calls         = calls         + 1,
-            light_calls   = light_calls   + excluded.light_calls,
-            full_calls    = full_calls    + excluded.full_calls,
-            cost_usd      = cost_usd      + excluded.cost_usd,
-            cli           = CASE WHEN excluded.cli != '' THEN excluded.cli ELSE cli END,
-            updated_at    = excluded.updated_at
+            input_tokens          = input_tokens          + excluded.input_tokens,
+            cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+            cache_read_tokens     = cache_read_tokens     + excluded.cache_read_tokens,
+            output_tokens         = output_tokens         + excluded.output_tokens,
+            duration_secs         = duration_secs         + excluded.duration_secs,
+            calls                 = calls                 + 1,
+            light_calls           = light_calls           + excluded.light_calls,
+            full_calls            = full_calls            + excluded.full_calls,
+            cost_usd              = cost_usd              + excluded.cost_usd,
+            cli                   = CASE WHEN excluded.cli != '' THEN excluded.cli ELSE cli END,
+            updated_at            = excluded.updated_at
         "#,
     )
     .bind(&team_key)
     .bind(&payload.worker)
     .bind(payload.input_tokens as i64)
+    .bind(payload.cache_creation_tokens as i64)
+    .bind(payload.cache_read_tokens as i64)
     .bind(payload.output_tokens as i64)
     .bind(payload.duration_secs as i64)
     .bind(light_delta)
@@ -1507,11 +1530,12 @@ async fn get_usage(
     let team_key = auth.team_id.clone().unwrap_or_default();
     let rows = sqlx::query(
         r#"
-        SELECT worker, input_tokens, output_tokens, duration_secs,
+        SELECT worker, input_tokens, cache_creation_tokens, cache_read_tokens,
+               output_tokens, duration_secs,
                calls, light_calls, full_calls, cost_usd, cli, updated_at
         FROM team_usage_totals
         WHERE team_id = ?
-        ORDER BY (input_tokens + output_tokens) DESC
+        ORDER BY (input_tokens + cache_creation_tokens + cache_read_tokens + output_tokens) DESC
         "#,
     )
     .bind(&team_key)
@@ -1524,6 +1548,8 @@ async fn get_usage(
 
     let mut workers = Vec::with_capacity(rows.len());
     let mut total_in = 0u64;
+    let mut total_cache_creation = 0u64;
+    let mut total_cache_read = 0u64;
     let mut total_out = 0u64;
     let mut total_dur = 0u64;
     let mut total_calls = 0u64;
@@ -1532,6 +1558,8 @@ async fn get_usage(
     let mut total_cost = 0.0f64;
     for row in rows {
         let input_tokens: i64 = row.get("input_tokens");
+        let cache_creation_tokens: i64 = row.get("cache_creation_tokens");
+        let cache_read_tokens: i64 = row.get("cache_read_tokens");
         let output_tokens: i64 = row.get("output_tokens");
         let duration_secs: i64 = row.get("duration_secs");
         let calls: i64 = row.get("calls");
@@ -1543,6 +1571,8 @@ async fn get_usage(
             .map(|t| t.with_timezone(&Utc))
             .unwrap_or_else(|_| Utc::now());
         total_in += input_tokens as u64;
+        total_cache_creation += cache_creation_tokens as u64;
+        total_cache_read += cache_read_tokens as u64;
         total_out += output_tokens as u64;
         total_dur += duration_secs as u64;
         total_calls += calls as u64;
@@ -1552,6 +1582,8 @@ async fn get_usage(
         workers.push(UsageRow {
             worker: row.get("worker"),
             input_tokens: input_tokens as u64,
+            cache_creation_tokens: cache_creation_tokens as u64,
+            cache_read_tokens: cache_read_tokens as u64,
             output_tokens: output_tokens as u64,
             duration_secs: duration_secs as u64,
             calls: calls as u64,
@@ -1566,6 +1598,8 @@ async fn get_usage(
     Ok(Json(UsageResponse {
         workers,
         total_input_tokens: total_in,
+        total_cache_creation_tokens: total_cache_creation,
+        total_cache_read_tokens: total_cache_read,
         total_output_tokens: total_out,
         total_duration_secs: total_dur,
         total_calls,

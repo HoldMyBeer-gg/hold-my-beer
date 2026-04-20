@@ -1,4 +1,5 @@
 use anyhow::Result;
+use sqlx::Row;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::str::FromStr;
 
@@ -264,6 +265,41 @@ async fn apply_team_schema(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    // Add cache-telemetry columns if an older DB predates them. ALTER ADD
+    // COLUMN is idempotent-safe via a presence check — sqlx errors when the
+    // column already exists, which is why we guard.
+    add_column_if_missing(pool, "team_usage_totals", "cache_creation_tokens",
+        "INTEGER NOT NULL DEFAULT 0").await?;
+    add_column_if_missing(pool, "team_usage_totals", "cache_read_tokens",
+        "INTEGER NOT NULL DEFAULT 0").await?;
+
+    Ok(())
+}
+
+/// Add a column to an existing table if it isn't already there. SQLite's
+/// `ALTER TABLE ADD COLUMN` fails if the column exists, so we probe first
+/// via `PRAGMA table_info`.
+async fn add_column_if_missing(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+    ty_and_default: &str,
+) -> Result<()> {
+    let rows = sqlx::query(&format!("PRAGMA table_info({})", table))
+        .fetch_all(pool)
+        .await?;
+    let has_column = rows.iter().any(|r| {
+        let name: String = r.get("name");
+        name == column
+    });
+    if !has_column {
+        sqlx::query(&format!(
+            "ALTER TABLE {} ADD COLUMN {} {}",
+            table, column, ty_and_default
+        ))
+        .execute(pool)
+        .await?;
+    }
     Ok(())
 }
 

@@ -183,11 +183,22 @@ pub enum LeaseOutcome {
 
 /// Delta report a worker sends to the server after each CLI invocation.
 /// Matches `collab_server::UsageReport`.
+///
+/// `input_tokens` / `cache_creation_tokens` / `cache_read_tokens` are the
+/// three disjoint buckets claude's API returns for the prompt side — adding
+/// them gives total input tokens. Reporting them separately lets the server
+/// (and any /usage consumer) compute cache hit rate as
+/// `cache_read / (input + cache_creation + cache_read)` — the signal for
+/// whether prompt caching is earning its keep.
 #[derive(Debug, Serialize)]
 pub struct UsageReport<'a> {
     pub worker: &'a str,
     pub duration_secs: u64,
     pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     pub output_tokens: u64,
     pub tier: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -203,6 +214,10 @@ pub struct UsageReport<'a> {
 pub struct UsageRow {
     pub worker: String,
     pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
     pub output_tokens: u64,
     pub duration_secs: u64,
     pub calls: u64,
@@ -217,6 +232,10 @@ pub struct UsageRow {
 pub struct UsageResponse {
     pub workers: Vec<UsageRow>,
     pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_cache_creation_tokens: u64,
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
     pub total_output_tokens: u64,
     pub total_duration_secs: u64,
     pub total_calls: u64,
@@ -433,7 +452,10 @@ impl CollabClient {
         let response = self.auth(self.client.get(&url)).send().await?;
 
         if !response.status().is_success() {
-            anyhow::bail!("Failed to fetch messages: {}", response.status());
+            // Include the URL so the user (and the config-resolution test
+            // suite) can see which server we tried — a bare `401 Unauthorized`
+            // is useless when you're debugging which config got loaded.
+            anyhow::bail!("Failed to fetch messages from {}: {}", url, response.status());
         }
 
         let mut messages: Vec<Message> = response.json().await?;
