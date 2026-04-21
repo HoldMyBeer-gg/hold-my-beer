@@ -1400,6 +1400,10 @@ function buildMessageEl(msg, isNew) {
   const div = document.createElement('div');
   div.className = 'msg' + (isNew ? ' is-new' : '');
 
+  // Sender name shows once — in the colored badge pill. The meta line
+  // then reads `→ recipient` without repeating the sender. Previously we
+  // also had an inline .msg-sender span that duplicated the badge text,
+  // making messages read like "rustydemon rustydemon → d4webdev".
   const badge = document.createElement('span');
   badge.className = `msg-badge badge-${colorIdx}`;
   badge.textContent = msg.sender || '';
@@ -1407,11 +1411,6 @@ function buildMessageEl(msg, isNew) {
 
   const meta = document.createElement('div');
   meta.className = 'msg-meta';
-
-  const senderSpan = document.createElement('span');
-  senderSpan.className = `msg-sender c${colorIdx}`;
-  senderSpan.textContent = msg.sender || '';
-  meta.appendChild(senderSpan);
 
   const toSpan = document.createElement('span');
   toSpan.className = 'msg-to';
