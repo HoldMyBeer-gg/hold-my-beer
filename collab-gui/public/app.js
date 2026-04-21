@@ -15,7 +15,8 @@ const _isTauri = !!(_T && _T.core);
 
 // ── App state ─────────────────────────────────────────────────────────────────
 let cfg = {
-  token:         '',
+  token:         '',   // team token (tm_…) — what workers auth with
+  teamName:      '',   // team.yml `team:` key
   serverUrl:     'http://localhost:8000',
   identity:      'human',
   projectDir:    '',
@@ -76,7 +77,11 @@ const CLI_TEMPLATES = {
     appendServerLog(p.line, p.stream === 'err');
   });
 
-  if (cfg.setupComplete && cfg.token) {
+  // teamName is required by the new schema — treat its absence as "config
+  // was saved by a pre-team version of the wizard" and drop back into Step 1
+  // so the human can mint a team token instead of auto-booting into a
+  // dashboard the backend no longer understands.
+  if (cfg.setupComplete && cfg.token && cfg.teamName) {
     // Already set up — hide wizard, show dashboard, and restart the server.
     // On a fresh app launch the server sidecar isn't running yet, so SSE
     // would loop on "reconnecting…" forever without this.
@@ -87,11 +92,22 @@ const CLI_TEMPLATES = {
     requestAnimationFrame(() => dash.classList.add('visible'));
     dashboardActive = true;
     showDashboard();
+    // Register the session FIRST so the Cmd+Q / close-window handler will
+    // warn about still-running workers even if start_server below races
+    // or errors out. Without this, a quick quit after the app reopens
+    // (before the server sidecar has finished starting) leaves worker
+    // daemons running silently with no prompt — which burns tokens. Must
+    // be awaited, not fire-and-forget.
+    try { await invoke('mark_session_active', { projectDir: cfg.projectDir }); } catch {}
+
     // Start server in background — connectSSE (called by showDashboard)
-    // will keep retrying until the server is ready.
+    // will keep retrying until the server is ready. Admin token is
+    // generated fresh per session; the team token already lives in
+    // team_tokens on the server disk, so workers auth with cfg.token
+    // via their own envs, not via this startup parameter.
     invoke('start_server', {
       serverUrl:  cfg.serverUrl,
-      token:      cfg.token,
+      adminToken: generateHexToken(32),
       projectDir: cfg.projectDir,
     }).catch(e => toast('Server error: ' + e, true));
   } else {
@@ -106,10 +122,11 @@ const CLI_TEMPLATES = {
 
 // ── Wizard helpers ────────────────────────────────────────────────────────────
 function prefillWizard() {
-  if (cfg.token)      document.getElementById('s1-token').value    = cfg.token;
-  if (cfg.serverUrl)  document.getElementById('s1-url').value      = cfg.serverUrl;
-  if (cfg.identity)   document.getElementById('s1-identity').value = cfg.identity;
-  if (cfg.projectDir) document.getElementById('s2-dir').value      = cfg.projectDir;
+  if (cfg.token)       document.getElementById('s1-token').value       = cfg.token;
+  if (cfg.teamName)    document.getElementById('s1-team-name').value   = cfg.teamName;
+  if (cfg.serverUrl)   document.getElementById('s1-url').value         = cfg.serverUrl;
+  if (cfg.identity)    document.getElementById('s1-identity').value    = cfg.identity;
+  if (cfg.projectDir)  document.getElementById('s2-dir').value         = cfg.projectDir;
   renderWorkerCards();
 }
 
@@ -162,20 +179,76 @@ function backFromWizard() {
 }
 
 
-// Step 1 validation
+// Matches the server's is_valid_team_name: alphanumeric + `-`/`_`, 1–64 chars.
+// Letters are case-preserved — there's no reason to force lowercase here
+// when "D4LFG" or "BlenderRig" are perfectly valid team names upstream.
+const TEAM_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+// Step 1 validation. Requires URL + team name + chat identity. The team
+// token is optional — if empty, the wizard mints one against the live
+// server during Step 4 launch (no admin token needed when the server
+// runs with no COLLAB_TOKEN configured, which is the single-user case).
 function step1Next() {
   const token    = document.getElementById('s1-token').value.trim();
+  const teamName = document.getElementById('s1-team-name').value.trim();
   const url      = document.getElementById('s1-url').value.trim();
   const identity = document.getElementById('s1-identity').value.trim();
 
-  if (!token)    { toast('Enter or generate a token first.', true); return; }
   if (!url)      { toast('Enter the server URL.', true); return; }
+  if (!teamName) { toast('Name this team.', true); return; }
+  if (!TEAM_NAME_RE.test(teamName)) {
+    toast('Team name: letters, numbers, dash, underscore. 1–64 chars.', true);
+    return;
+  }
   if (!identity) { toast('Enter your name for the chat.', true); return; }
 
-  cfg.token     = token;
+  cfg.token     = token;          // may be empty — filled at launch if so
+  cfg.teamName  = teamName;
   cfg.serverUrl = url;
   cfg.identity  = identity;
   goStep(2);
+}
+
+// Mint a fresh 64-char hex secret into the Team Token field and reveal it
+// briefly so the user can eyeball / copy it before the field locks back to
+// password display. Mirrors the Paste button's 3-second reveal so users
+// aren't surprised by the type flip.
+function doGenerateTeamToken() {
+  const input = document.getElementById('s1-token');
+  if (!input) return;
+  input.value = generateHexToken(32);
+  input.type = 'text';
+  setTimeout(() => { input.type = 'password'; }, 3000);
+}
+
+// Mint a team token against the currently-running server. Called from
+// doLaunch after start_server, so there IS a server to talk to. The
+// Bearer token is the per-session admin secret the GUI generated when
+// spawning the server — server requires an admin token on /admin/teams
+// and this is the only one that exists for this session.
+async function mintTeamTokenDuringLaunch(adminToken) {
+  const url = cfg.serverUrl.replace(/\/+$/, '') + '/admin/teams';
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${adminToken}`,
+    },
+    body: JSON.stringify({ name: cfg.teamName }),
+  });
+  if (resp.status === 409) {
+    throw new Error(
+      `A team named "${cfg.teamName}" already exists on this server. ` +
+      `Go back to Step 1, open "I already have a team token", and paste its tm_… token.`
+    );
+  }
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`Server rejected team mint (HTTP ${resp.status}): ${body.slice(0, 200)}`);
+  }
+  const data = await resp.json();
+  if (!data.token) throw new Error('Server minted the team but returned no token.');
+  return data.token;
 }
 
 // Step 2 validation
@@ -205,9 +278,11 @@ function step3Next() {
     const existing = workers[Array.from(cards).indexOf(card)] || {};
     const modelEl = card.querySelector('.wc-model');
     const tmplEl  = card.querySelector('.wc-cli-template');
+    const cbEl    = card.querySelector('.wc-codebase');
     const entry = { ...existing, name, role };
     if (modelEl) entry.model = modelEl.value.trim() || undefined;
     if (tmplEl)  entry.cli_template = tmplEl.value.trim() || undefined;
+    if (cbEl)    entry.codebase_path = cbEl.value.trim() || undefined;
     updated.push(entry);
   });
   if (!ok) return;
@@ -236,7 +311,7 @@ function renderWorkerCards() {
   workers.forEach((w, i) => {
     const div = document.createElement('div');
     div.className = 'worker-card';
-    const hasAdvanced = w.model || w.cli_template;
+    const hasAdvanced = w.model || w.cli_template || w.codebase_path;
     div.innerHTML = `
       <div class="wc-top">
         <div class="field">
@@ -252,6 +327,14 @@ function renderWorkerCards() {
         <button type="button" class="btn btn-ghost btn-xs wc-adv-toggle">${hasAdvanced ? '▾' : '▸'} Advanced</button>
         <div class="wc-advanced" ${hasAdvanced ? '' : 'hidden'}>
           <div class="field">
+            <label>Codebase path override</label>
+            <div class="dir-row">
+              <input class="inp wc-codebase inp-mono" type="text" value="${esc(w.codebase_path || '')}" placeholder="(use project folder from Step 2)">
+              <button type="button" class="btn btn-ghost wc-browse">Browse</button>
+            </div>
+            <div class="hint-box">Set this when a worker lives in a different repo than the rest of the team.</div>
+          </div>
+          <div class="field">
             <label>Model override</label>
             <input class="inp wc-model inp-mono" type="text" value="${esc(w.model || '')}" placeholder="(use default)">
           </div>
@@ -266,6 +349,19 @@ function renderWorkerCards() {
       const panel = div.querySelector('.wc-advanced');
       panel.hidden = !panel.hidden;
       e.target.textContent = (panel.hidden ? '▸' : '▾') + ' Advanced';
+    });
+    div.querySelector('.wc-browse').addEventListener('click', async () => {
+      try {
+        const dir = await invoke('pick_directory');
+        if (!dir) return;
+        const cbInput = div.querySelector('.wc-codebase');
+        cbInput.value = dir;
+        // Persist immediately so re-renders (e.g. from addWorker elsewhere)
+        // don't clobber the pick.
+        syncWorkersFromDom();
+      } catch (e) {
+        toast('Could not open directory picker: ' + e, true);
+      }
     });
     const rm = document.createElement('button');
     rm.className = 'btn btn-ghost btn-icon wc-remove';
@@ -289,6 +385,7 @@ function syncWorkersFromDom() {
     const roleEl = card.querySelector('.wc-role');
     const modelEl = card.querySelector('.wc-model');
     const tmplEl  = card.querySelector('.wc-cli-template');
+    const cbEl    = card.querySelector('.wc-codebase');
     const existing = workers[i] || {};
     const entry = {
       ...existing,
@@ -297,6 +394,7 @@ function syncWorkersFromDom() {
     };
     if (modelEl) entry.model = modelEl.value.trim() || undefined;
     if (tmplEl)  entry.cli_template = tmplEl.value.trim() || undefined;
+    if (cbEl)    entry.codebase_path = cbEl.value.trim() || undefined;
     updated.push(entry);
   });
   workers = updated;
@@ -325,17 +423,29 @@ function _diagBanner(msg, kind) {
   el.textContent = msg;
 }
 
-async function doGenerateToken() {
+// 32-byte hex token. Used for the per-session admin secret the GUI hands
+// the collab-server sidecar at startup; never persisted, never shown.
+function generateHexToken(bytes = 32) {
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+}
+
+// Convenience: read a team token from the clipboard. Saves the user a
+// paste-into-masked-field step, and flips the field visible briefly so
+// they can verify they got the right one.
+async function doPasteTeamToken() {
   const input = document.getElementById('s1-token');
   if (!input) return;
-
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  const token = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
-
-  input.value = token;
-  input.type = 'text';
-  setTimeout(() => { input.type = 'password'; }, 3000);
+  try {
+    const text = (await navigator.clipboard.readText()).trim();
+    if (!text) { toast('Clipboard is empty.', true); return; }
+    input.value = text;
+    input.type = 'text';
+    setTimeout(() => { input.type = 'password'; }, 3000);
+  } catch (e) {
+    toast('Could not read clipboard — paste manually into the field.', true);
+  }
 }
 
 window.addEventListener('error', (e) => {
@@ -358,21 +468,29 @@ async function doBrowse() {
   }
 }
 
-// If <dir>/workers.yaml exists, parse it and populate the wizard state so the
-// user sees their existing project instead of the blank defaults.
+// If <dir>/team.yml (preferred) or <dir>/workers.yaml exists, parse it and
+// populate the wizard state so the user sees their existing project
+// instead of the blank defaults. team.yml wins — workers.yaml is only
+// read as a legacy fallback for projects that predate the team refactor.
 async function loadExistingProject(dir) {
-  const yamlPath = dir + '/workers.yaml';
-  let exists = false;
-  try { exists = await invoke('path_exists', { path: yamlPath }); } catch (e) {}
-  if (!exists) return false;
+  const teamPath    = dir + '/team.yml';
+  const legacyPath  = dir + '/workers.yaml';
+  let yamlPath = null;
+  let sourceLabel = null;
+  try {
+    if (await invoke('path_exists', { path: teamPath }))   { yamlPath = teamPath;   sourceLabel = 'team.yml'; }
+    else if (await invoke('path_exists', { path: legacyPath })) { yamlPath = legacyPath; sourceLabel = 'workers.yaml'; }
+  } catch (e) {}
+  if (!yamlPath) return false;
 
   let text = '';
   try { text = await invoke('read_file', { path: yamlPath }); }
-  catch (e) { toast('Found workers.yaml but could not read it: ' + e, true); return false; }
+  catch (e) { toast(`Found ${sourceLabel} but could not read it: ` + e, true); return false; }
 
-  const parsed = parseWorkersYaml(text);
+  const parsed = parseTeamOrWorkersYaml(text);
   if (!parsed) return false;
 
+  if (parsed.team)         { cfg.teamName = parsed.team; const el = document.getElementById('s1-team-name'); if (el) el.value = parsed.team; }
   if (parsed.cli_template) cfg.cliTemplate = parsed.cli_template;
   if (parsed.model)        cfg.model       = parsed.model;
   if (parsed.workers && parsed.workers.length) workers = parsed.workers;
@@ -394,14 +512,15 @@ async function loadExistingProject(dir) {
   if (modelEl && cfg.model) modelEl.value = cfg.model;
   renderWorkerCards();
 
-  toast('Loaded existing workers.yaml from ' + dir);
+  toast(`Loaded existing ${sourceLabel} from ${dir}`);
   return true;
 }
 
-// Minimal parser for the exact shape buildWorkersYaml produces: flat scalar
-// keys plus a `workers:` list of `- name: x` / `  role: "y"` pairs. Not a
+// Minimal parser for the exact shape buildTeamYaml (and legacy
+// buildWorkersYaml) produces: flat scalar keys plus a `workers:` list of
+// `- name: x` / `  role: "y"` / `  codebase_path: "z"` rows. Not a
 // general YAML parser — anything fancier is ignored.
-function parseWorkersYaml(text) {
+function parseTeamOrWorkersYaml(text) {
   const out = { workers: [] };
   const lines = text.split(/\r?\n/);
   const unquote = s => {
@@ -454,21 +573,34 @@ async function doLaunch() {
   // of auto-jumping to the dashboard before they can read the error.
   let launchHadError = false;
 
+  // Workers auth with the team token via COLLAB_TOKEN. If we don't have
+  // one yet (Step 1 left it blank), we mint one after the server starts
+  // — see the `if (!cfg.token)` block further down — then patch envs in
+  // place before subsequent collab invocations inherit them.
   const envs = [
     ['COLLAB_TOKEN', cfg.token],
     ['COLLAB_SERVER', cfg.serverUrl],
     ['COLLAB_INSTANCE', cfg.identity || 'gui'],
   ];
+  const setEnv = (k, v) => {
+    const row = envs.find(e => e[0] === k);
+    if (row) row[1] = v; else envs.push([k, v]);
+  };
 
-  // Step 1: Write workers.yaml. Skip the write when the current wizard
-  // state exactly matches what's on disk (so a re-launch is a no-op), but
+  // Per-launch admin secret. The server refuses to start without an admin
+  // token, and we need to be the one that holds it so we can hit
+  // /admin/teams during the mint step. Never saved — regenerated every
+  // launch. Equivalent to the human typing `COLLAB_ADMIN_TOKEN=...
+  // collab-server` in a terminal, except the human doesn't have to know
+  // about any of it.
+  const sessionAdminToken = generateHexToken(32);
+
+  // Step 1: Write team.yml. Skip the write when the current wizard state
+  // exactly matches what's on disk (so a re-launch is a no-op), but
   // otherwise always write — the user went through the wizard on purpose.
-  // A previous version prompted via `window.confirm()` on differences, but
-  // `confirm()` in a Tauri webview can silently return false, which was
-  // throwing away intentional renames.
   setLaunchItem('li-config', 'running');
-  const yaml = buildWorkersYaml();
-  const yamlPath = cfg.projectDir + '/workers.yaml';
+  const yaml = buildTeamYaml();
+  const yamlPath = cfg.projectDir + '/team.yml';
   let existing = null;
   try {
     const exists = await invoke('path_exists', { path: yamlPath });
@@ -477,13 +609,13 @@ async function doLaunch() {
 
   if (existing === yaml) {
     setLaunchItem('li-config', 'done');
-    appendLaunchLog('• workers.yaml unchanged, skipping write', false);
+    appendLaunchLog('• team.yml unchanged, skipping write', false);
   } else {
     appendLaunchLog((existing === null ? 'Writing ' : 'Updating ') + yamlPath, false);
     try {
       await invoke('write_file', { path: yamlPath, content: yaml });
       setLaunchItem('li-config', 'done');
-      appendLaunchLog(existing === null ? '✓ workers.yaml written' : '✓ workers.yaml updated', false);
+      appendLaunchLog(existing === null ? '✓ team.yml written' : '✓ team.yml updated', false);
     } catch (e) {
       setLaunchItem('li-config', 'error', e);
       appendLaunchLog('✗ ' + e, true);
@@ -497,12 +629,18 @@ async function doLaunch() {
   // team (e.g. a mac worker connecting to a Windows host over Tailscale) or
   // simply re-launching against a server that's already up. Either way,
   // spawning a new one on top would fight for the port and break auth.
+  //
+  // Probe bearer: use the team token if we have one (re-launch / joiner
+  // case) or the fresh session admin token if we don't (first-launch
+  // case — an existing server would reject this, correctly telling us
+  // there's a conflict we need to surface).
   setLaunchItem('li-server', 'running');
   let serverAlreadyRunning = false;
   try {
     const probeUrl = cfg.serverUrl.replace(/\/+$/, '') + '/';
+    const probeBearer = cfg.token || sessionAdminToken;
     const probe = await fetch(probeUrl, {
-      headers: { Authorization: `Bearer ${cfg.token}` },
+      headers: { Authorization: `Bearer ${probeBearer}` },
       signal: AbortSignal.timeout(2500),
     });
     if (probe.status === 200) {
@@ -532,7 +670,7 @@ async function doLaunch() {
     try {
       await invoke('start_server', {
         serverUrl:  cfg.serverUrl,
-        token:      cfg.token,
+        adminToken: sessionAdminToken,
         projectDir: cfg.projectDir,
       });
       // Give the server a moment to start
@@ -547,13 +685,34 @@ async function doLaunch() {
     }
   }
 
-  // Step 3: collab init
+  // Mint a team token against the running server if the wizard didn't
+  // collect one. For localhost single-user this is the default path — the
+  // server starts with no COLLAB_TOKEN configured, so /admin/teams accepts
+  // the request without auth and hands back a tm_… token we can use
+  // everywhere downstream.
+  if (!cfg.token) {
+    appendLaunchLog(`Minting team token for "${cfg.teamName}"…`, false);
+    try {
+      cfg.token = await mintTeamTokenDuringLaunch(sessionAdminToken);
+      setEnv('COLLAB_TOKEN', cfg.token);
+      appendLaunchLog('✓ Team token minted', false);
+    } catch (e) {
+      setLaunchItem('li-server', 'error', 'team mint failed');
+      appendLaunchLog('✗ ' + (e && e.message ? e.message : e), true);
+      resetLaunchBtn();
+      return;
+    }
+  }
+
+  // Step 3: collab init. The CLI sniffs the yaml and picks the team-init
+  // code path because our file starts with `team:`, writing AGENT.md +
+  // .collab/team-managed into each worker's codebase_path.
   setLaunchItem('li-init', 'running');
-  appendLaunchLog('Running: collab init workers.yaml', false);
+  appendLaunchLog('Running: collab init team.yml', false);
   try {
     const code = await invoke('run_command', {
       program: 'collab',
-      args:    ['init', 'workers.yaml'],
+      args:    ['init', 'team.yml'],
       cwd:     cfg.projectDir,
       envs,
     });
@@ -643,20 +802,22 @@ function clearLaunchLog() {
   if (log) log.innerHTML = '';
 }
 
-function buildWorkersYaml() {
-  // Escape a string for use inside a double-quoted YAML scalar:
-  // collapse any CR/LF variants to a space so the value stays on one line.
-  const yamlStr = s => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n|\r/g, ' ');
+// Emit team.yml (current backend schema). Each worker owns its own
+// `codebase_path`; when the user didn't override, we fall back to the
+// project folder picked in Step 2 so the yaml is always valid.
+function buildTeamYaml() {
+  const yamlStr = s => String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n|\r/g, ' ');
   const lines = [];
+  lines.push(`team: "${yamlStr(cfg.teamName)}"`);
   lines.push(`server: "${yamlStr(cfg.serverUrl)}"`);
   lines.push(`cli_template: "${yamlStr(cfg.cliTemplate)}"`);
   if (cfg.model) lines.push(`model: "${yamlStr(cfg.model)}"`);
-  lines.push(`output_dir: ./workers`);
-  lines.push(`codebase_path: "${yamlStr(cfg.projectDir)}"`);
   lines.push(`workers:`);
   for (const w of workers) {
+    const cbPath = (w.codebase_path && w.codebase_path.trim()) || cfg.projectDir;
     lines.push(`  - name: ${w.name}`);
     lines.push(`    role: "${yamlStr(w.role)}"`);
+    lines.push(`    codebase_path: "${yamlStr(cbPath)}"`);
     if (w.model) lines.push(`    model: "${yamlStr(w.model)}"`);
     if (w.cli_template) lines.push(`    cli_template: "${yamlStr(w.cli_template)}"`);
   }
@@ -799,7 +960,19 @@ async function connectSSE() {
 }
 
 function scheduleSSEReconnect() {
-  const delay = Math.min(1000 * Math.pow(1.8, sseRetries) + Math.random() * 500, 30_000);
+  // Startup case dominates this code path: the server sidecar was spawned
+  // ~instantly ago and is still binding :8000, so the first few connects
+  // fail with "connection refused". Aggressive initial retries (≤500ms)
+  // close the gap — by the time we're 3–4 retries in, the server is ready.
+  //
+  // Steady-state-failure case (server crashed, network broken) doesn't
+  // benefit from sub-second retries; slow growth past retry ~6 walks the
+  // delay up to a reasonable 10s ceiling without the 30s plateau the
+  // previous schedule sat on.
+  const delay = Math.min(
+    200 * Math.pow(1.5, sseRetries) + Math.random() * 100,
+    10_000,
+  );
   sseRetries++;
   setTimeout(connectSSE, delay);
 }
@@ -809,7 +982,17 @@ function setConnStatus(up) {
   const label = document.getElementById('conn-label');
   if (!pill) return;
   pill.className = 'conn-pill ' + (up ? 'live' : 'dead');
-  if (label) label.textContent = up ? 'live' : 'reconnecting…';
+  // "connecting…" before we've ever been up; "reconnecting…" after we've
+  // had a live connection and it dropped. Cleaner UX than always showing
+  // "reconnecting…" during the initial sidecar boot.
+  if (label) {
+    if (up) {
+      label.textContent = 'live';
+      window.__sseEverLive = true;
+    } else {
+      label.textContent = window.__sseEverLive ? 'reconnecting…' : 'connecting…';
+    }
+  }
 }
 
 // ── Server status polling ─────────────────────────────────────────────────────
@@ -871,6 +1054,8 @@ function renderRoster(workers) {
   const list = document.getElementById('roster-list');
   if (!list) return;
   list.innerHTML = '';
+  const countEl = document.getElementById('roster-header-count');
+  if (countEl) countEl.textContent = workers && workers.length ? String(workers.length) : '';
   if (!workers || workers.length === 0) {
     const empty = document.createElement('div');
     empty.className = 'feed-empty feed-empty-sm';
@@ -887,6 +1072,12 @@ function renderRoster(workers) {
     const item = document.createElement('div');
     item.className = 'roster-item';
     item.title = w.role || '';
+    item.dataset.worker = w.instance_id;
+    // Click opens the "is it working?" drill-in. Kick button below gets
+    // stopPropagation so the click doesn't bubble to this handler.
+    item.addEventListener('click', () => {
+      openWorkerGlance(w.instance_id, w.role || '');
+    });
 
     const dot = document.createElement('div');
     dot.className = 'roster-dot' + (isOnline ? ' online' : '');
@@ -912,8 +1103,72 @@ function renderRoster(workers) {
     count.textContent = w.message_count || '';
     item.appendChild(count);
 
+    // Manual kick button — only for workers that aren't us. Sends a tiny
+    // message that the worker harness treats like any other external
+    // delivery, triggering one CLI call against its backlog. Exists because
+    // we deliberately don't idle-kick (idle must stay free), so a stalled
+    // worker with pending todos needs a human poke.
+    if (w.instance_id !== (cfg.identity || 'human')) {
+      const kick = document.createElement('button');
+      kick.type = 'button';
+      kick.className = 'roster-kick';
+      kick.textContent = '⚡';
+      kick.title = `Kick @${w.instance_id} — fires one CLI call against their pending todos`;
+      kick.addEventListener('click', (e) => {
+        e.stopPropagation();
+        kickWorker(w.instance_id, kick);
+      });
+      item.appendChild(kick);
+    }
+
     list.appendChild(item);
   });
+}
+
+async function kickWorker(instanceId, btn) {
+  if (!cfg.serverUrl || !cfg.token) { toast('Not connected', true); return; }
+  const sender = (cfg.identity || 'human').replace(/^@/, '');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const res = await fetch(`${cfg.serverUrl}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.token}` },
+      body: JSON.stringify({
+        sender,
+        recipient: instanceId,
+        content: 'Checking in — process any pending todos or reply with blockers.',
+        refs: [],
+      }),
+    });
+    if (res.ok) {
+      toast(`Kicked @${instanceId}`);
+      // Visible win: hold the button at ✓ green and tint the row briefly so
+      // a hover-mouse-away user still sees that the kick fired. Revert
+      // after 1.2s so repeat kicks remain available.
+      btn.textContent = '✓';
+      btn.classList.add('ok');
+      const row = btn.closest('.roster-item');
+      if (row) {
+        row.classList.add('kicked');
+        setTimeout(() => row.classList.remove('kicked'), 1200);
+      }
+      setTimeout(() => {
+        btn.textContent = origText;
+        btn.classList.remove('ok');
+        btn.disabled = false;
+      }, 1200);
+    } else {
+      toast(`Kick failed: ${res.status}`, true);
+      btn.textContent = origText;
+      btn.disabled = false;
+    }
+  } catch (e) {
+    toast(`Kick error: ${e}`, true);
+    btn.textContent = origText;
+    btn.disabled = false;
+  }
 }
 
 // ── Todos ─────────────────────────────────────────────────────────────────────
@@ -961,6 +1216,7 @@ function renderTodos(todos) {
   todos.forEach(t => {
     const div = document.createElement('div');
     div.className = 'todo-item';
+    div.dataset.hash = t.hash || '';
 
     const byLine = document.createElement('div');
     byLine.className = 'todo-by';
@@ -969,6 +1225,22 @@ function renderTodos(todos) {
     assignee.textContent = '@' + (t.instance || '');
     byLine.appendChild(assignee);
     byLine.appendChild(document.createTextNode(' · from ' + (t.assigned_by || '') + ' · ' + timeAgo(t.created_at)));
+
+    // ✓ button — marks the todo complete via PATCH /todos/:hash/done.
+    // Server treats "complete" as the only mutation (no separate delete),
+    // and a completed todo drops out of list_todos on the next fetch.
+    if (t.hash) {
+      const done = document.createElement('button');
+      done.className = 'todo-done';
+      done.title = 'Mark done — removes it from this worker\'s queue';
+      done.setAttribute('aria-label', 'Mark todo complete');
+      done.textContent = '✓';
+      done.addEventListener('click', (e) => {
+        e.stopPropagation();
+        markTodoDone(t.hash, div, done);
+      });
+      byLine.appendChild(done);
+    }
     div.appendChild(byLine);
 
     const descLine = document.createElement('div');
@@ -978,6 +1250,37 @@ function renderTodos(todos) {
 
     list.appendChild(div);
   });
+}
+
+// Mark a todo complete. Optimistic: fade the row immediately so the click
+// feels instant; on server failure we restore it and toast the error.
+async function markTodoDone(hash, rowEl, btnEl) {
+  if (!cfg.serverUrl || !cfg.token) { toast('Not connected', true); return; }
+  if (!hash || hash.length < 4) return;
+  btnEl.disabled = true;
+  rowEl.classList.add('completing');
+  try {
+    const res = await fetch(`${cfg.serverUrl}/todos/${encodeURIComponent(hash)}/done`, {
+      method: 'PATCH',
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    });
+    if (res.ok) {
+      // Animate out, then refresh the list so other clients (and ourselves)
+      // pick up the new state from the server rather than guessing.
+      setTimeout(() => fetchTodos(), 220);
+    } else if (res.status === 409) {
+      // Already completed by someone else — refresh to drop the row.
+      fetchTodos();
+    } else {
+      rowEl.classList.remove('completing');
+      btnEl.disabled = false;
+      toast('Could not mark done: HTTP ' + res.status, true);
+    }
+  } catch (e) {
+    rowEl.classList.remove('completing');
+    btnEl.disabled = false;
+    toast('Could not mark done: ' + e, true);
+  }
 }
 
 function updateTodoWorkerSelect() {
@@ -1556,165 +1859,125 @@ async function registerPresence() {
 }
 
 // ── Panel toggles ─────────────────────────────────────────────────────────────
+// The three visibility panels (log, todos, usage) route through `prefs` so
+// that the topbar buttons and the accessibility panel stay in sync, and the
+// state survives a restart. applyPrefs() does the DOM work.
 function toggleServerLog() {
-  serverLogOpen = !serverLogOpen;
-  const panel = document.getElementById('server-log-panel');
-  if (panel) panel.classList.toggle('open', serverLogOpen);
+  prefs.panels.log = !prefs.panels.log;
+  savePrefs(); applyPrefs();
 }
 
 function toggleTodos() {
-  todosVisible = !todosVisible;
-  const panel = document.getElementById('todos-panel');
-  if (panel) panel.classList.toggle('collapsed', !todosVisible);
+  prefs.panels.todos = !prefs.panels.todos;
+  savePrefs(); applyPrefs();
 }
 
 // ── Usage panel ───────────────────────────────────────────────────────────────
 function toggleUsage() {
-  usageOpen = !usageOpen;
-  const panel = document.getElementById('usage-panel');
-  if (panel) panel.classList.toggle('open', usageOpen);
-  if (usageOpen) {
+  prefs.panels.usage = !prefs.panels.usage;
+  savePrefs(); applyPrefs();
+  // Poll only while the panel is visible.
+  if (prefs.panels.usage) {
     fetchUsage();
-    usageTimer = setInterval(fetchUsage, 10_000);
+    if (!usageTimer) usageTimer = setInterval(fetchUsage, 10_000);
   } else {
-    clearInterval(usageTimer);
-    usageTimer = null;
+    if (usageTimer) { clearInterval(usageTimer); usageTimer = null; }
   }
 }
 
 async function fetchUsage() {
-  if (!cfg.projectDir) { renderUsage([], null); return; }
-  const logPath = cfg.projectDir + '/.collab/usage.log';
-  let text = '';
+  if (!cfg.serverUrl) { renderUsage(null); return; }
   try {
-    const exists = await invoke('path_exists', { path: logPath });
-    if (!exists) { renderUsage([], null); return; }
-    text = await invoke('read_file', { path: logPath });
+    const url = cfg.serverUrl.replace(/\/+$/, '') + '/usage';
+    const headers = cfg.token ? { Authorization: `Bearer ${cfg.token}` } : {};
+    const resp = await fetch(url, { headers });
+    if (!resp.ok) { renderUsage(null); return; }
+    const data = await resp.json();
+    renderUsage(data);
   } catch (e) {
-    renderUsage([], null);
-    return;
+    renderUsage(null);
   }
-  const rows = parseUsageLog(text);
-  renderUsage(rows, text);
 }
 
-// TSV columns: ts \t worker \t duration_s \t in_tokens \t out_tokens \t cli \t tier \t cost
-function parseUsageLog(text) {
-  const out = [];
-  for (const line of text.split('\n')) {
-    if (!line || line.length > 1024) continue;
-    const c = line.split('\t');
-    if (c.length < 5) continue;
-    const worker = c[1];
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(worker)) continue;
-    out.push({
-      ts:       c[0],
-      worker,
-      duration: parseInt(c[2], 10) || 0,
-      inTok:    parseInt(c[3], 10) || 0,
-      outTok:   parseInt(c[4], 10) || 0,
-      cli:      c[5] || '?',
-      tier:     c[6] || 'full',
-      cost:     parseFloat(c[7] || '0') || 0,
-    });
-  }
-  return out;
-}
-
-function renderUsage(rows, _rawText) {
+function renderUsage(data) {
   const inner = document.getElementById('usage-inner');
   const totalEl = document.getElementById('usage-total');
   if (!inner) return;
   inner.innerHTML = '';
 
-  if (!rows.length) {
+  const workers = (data && Array.isArray(data.workers)) ? data.workers : [];
+  if (!workers.length) {
     const empty = document.createElement('div');
     empty.className = 'usage-empty';
-    empty.textContent = cfg.projectDir
-      ? 'No usage recorded yet. Workers append here after each turn.'
-      : 'No project directory set.';
+    empty.textContent = data
+      ? 'No usage recorded yet. Workers report to the server after each turn.'
+      : 'Could not reach the server.';
     inner.appendChild(empty);
     if (totalEl) totalEl.textContent = '—';
     return;
   }
 
-  let totalIn = 0, totalOut = 0, totalCost = 0, totalDur = 0;
-  for (const r of rows) {
-    totalIn   += r.inTok;
-    totalOut  += r.outTok;
-    totalCost += r.cost;
-    totalDur  += r.duration;
-  }
+  const totalIn = data.total_input_tokens || 0;
+  const totalOut = data.total_output_tokens || 0;
+  const totalDur = data.total_duration_secs || 0;
+  const totalCost = data.total_cost_usd || 0;
+  const totalCalls = data.total_calls || 0;
+
   if (totalEl) {
     const costStr = totalCost > 0 ? ` · $${totalCost.toFixed(4)}` : '';
     totalEl.textContent =
-      `${rows.length} call${rows.length !== 1 ? 's' : ''} · ` +
+      `${totalCalls} call${totalCalls !== 1 ? 's' : ''} · ` +
       `${fmtTokens(totalIn + totalOut)} toks · ` +
       `${fmtDuration(totalDur)}${costStr}`;
   }
 
-  // Newest last so the viewport scrolls to the latest entry naturally.
-  rows.slice(-200).forEach(r => {
+  // One row per worker — heaviest first (server already sorts by token volume).
+  workers.forEach(w => {
     const row = document.createElement('div');
     row.className = 'usage-row';
 
-    const t = document.createElement('span');
-    t.className = 'usage-time';
-    t.textContent = fmtTime(r.ts);
-    row.appendChild(t);
-
-    const w = document.createElement('span');
-    w.className = 'usage-worker';
-    w.textContent = r.worker;
-    w.style.color = COLORS[getColor(r.worker)];
-    row.appendChild(w);
+    const nameEl = document.createElement('span');
+    nameEl.className = 'usage-worker';
+    nameEl.textContent = w.worker;
+    nameEl.style.color = COLORS[getColor(w.worker)];
+    row.appendChild(nameEl);
 
     const toks = document.createElement('span');
     toks.className = 'usage-toks';
-    toks.textContent = `${fmtTokens(r.inTok)} in · ${fmtTokens(r.outTok)} out`;
+    toks.textContent = `${fmtTokens(w.input_tokens)} in · ${fmtTokens(w.output_tokens)} out`;
     row.appendChild(toks);
+
+    const calls = document.createElement('span');
+    calls.className = 'usage-time';
+    calls.textContent = `${w.calls} call${w.calls !== 1 ? 's' : ''} (${w.full_calls}F/${w.light_calls}L)`;
+    row.appendChild(calls);
 
     const dur = document.createElement('span');
     dur.className = 'usage-dur';
-    dur.textContent = fmtDuration(r.duration);
+    dur.textContent = fmtDuration(w.duration_secs);
     row.appendChild(dur);
 
     const cost = document.createElement('span');
-    cost.className = 'usage-cost' + (r.cost > 0 ? '' : ' zero');
-    cost.textContent = r.cost > 0 ? `$${r.cost.toFixed(4)}` : '—';
+    cost.className = 'usage-cost' + (w.cost_usd > 0 ? '' : ' zero');
+    cost.textContent = w.cost_usd > 0 ? `$${w.cost_usd.toFixed(4)}` : '—';
     row.appendChild(cost);
 
     inner.appendChild(row);
   });
 
-  // Per-worker summary footer
-  const workerMap = {};
-  for (const r of rows) {
-    if (!workerMap[r.worker]) workerMap[r.worker] = { inTok: 0, outTok: 0, cost: 0, duration: 0, calls: 0 };
-    workerMap[r.worker].inTok    += r.inTok;
-    workerMap[r.worker].outTok   += r.outTok;
-    workerMap[r.worker].cost     += r.cost;
-    workerMap[r.worker].duration += r.duration;
-    workerMap[r.worker].calls++;
-  }
-  const workerNames = Object.keys(workerMap);
-  if (workerNames.length > 1 || rows.length > 0) {
-    const sep = document.createElement('div');
-    sep.className = 'usage-sep';
-    inner.appendChild(sep);
+  const sep = document.createElement('div');
+  sep.className = 'usage-sep';
+  inner.appendChild(sep);
 
-    const totalRow = document.createElement('div');
-    totalRow.className = 'usage-row usage-totals-row';
-    totalRow.innerHTML =
-      `<span class="usage-time" style="color:var(--dim-text)">TOTAL</span>` +
-      `<span class="usage-worker" style="color:var(--dim-text)">${rows.length} call${rows.length !== 1 ? 's' : ''}</span>` +
-      `<span class="usage-toks">${fmtTokens(totalIn)} in · ${fmtTokens(totalOut)} out</span>` +
-      `<span class="usage-dur">${fmtDuration(totalDur)}</span>` +
-      `<span class="usage-cost${totalCost > 0 ? '' : ' zero'}">${totalCost > 0 ? '$' + totalCost.toFixed(4) : '—'}</span>`;
-    inner.appendChild(totalRow);
-  }
-
-  inner.scrollTop = inner.scrollHeight;
+  const totalRow = document.createElement('div');
+  totalRow.className = 'usage-row usage-totals-row';
+  totalRow.innerHTML =
+    `<span class="usage-worker" style="color:var(--dim-text)">TOTAL</span>` +
+    `<span class="usage-toks">${fmtTokens(totalIn)} in · ${fmtTokens(totalOut)} out</span>` +
+    `<span class="usage-time" style="color:var(--dim-text)">${totalCalls} call${totalCalls !== 1 ? 's' : ''}</span>` +
+    `<span class="usage-dur">${fmtDuration(totalDur)}</span>` +
+    `<span class="usage-cost${totalCost > 0 ? '' : ' zero'}">${totalCost > 0 ? '$' + totalCost.toFixed(4) : '—'}</span>`;
+  inner.appendChild(totalRow);
 }
 
 function fmtTokens(n) {
@@ -1784,8 +2047,9 @@ function toast(msg, isErr) {
   setTimeout(() => el.remove(), 4000);
 }
 
-// Initial todos panel state: collapsed
-document.getElementById('todos-panel').classList.add('collapsed');
+// Prefs load + apply is called at the bottom of the file, after the
+// `let prefs = ...` declaration has run — calling it up here would hit the
+// TDZ and crash the whole script.
 
 // ── Test hooks ───────────────────────────────────────────────────────────────
 // Playwright tests need to read/write wizard state and call internal
@@ -1797,8 +2061,8 @@ window.__wizard = {
   set cfg(v)       { const { token: _t, ...rest } = v; Object.assign(cfg, rest); },
   get workers()    { return workers; },
   set workers(v)   { workers = v; },
-  parseWorkersYaml,
-  buildWorkersYaml,
+  parseTeamOrWorkersYaml,
+  buildTeamYaml,
   loadExistingProject,
   syncWorkersFromDom,
   addWorker,
@@ -1832,9 +2096,10 @@ window.__wizard = {
   }, true);
 
   // Wizard — step navigation + actions
-  on('btn-gen-token',   'click', doGenerateToken);
-  on('btn-step1-next',  'click', step1Next);
-  on('btn-browse',      'click', doBrowse);
+  on('btn-generate-team-token','click', doGenerateTeamToken);
+  on('btn-paste-team-token','click', doPasteTeamToken);
+  on('btn-step1-next',      'click', step1Next);
+  on('btn-browse',          'click', doBrowse);
   on('btn-step2-next',  'click', step2Next);
   on('btn-step3-next',  'click', step3Next);
   on('btn-add-worker',  'click', addWorker);
@@ -1904,4 +2169,318 @@ window.__wizard = {
       if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doAddTodo(); }
     });
   }
+
+  // Design refresh (2026-04-20): theme toggle, a11y panel, mic, resize,
+  // worker drill-in. Only mic + resize wire at load; a11y panel and worker
+  // glance wire inside app-panels.js when that bundle is pulled in by
+  // ensurePanels().
+  on('btn-toggle-theme', 'click', toggleTheme);
+  on('btn-toggle-a11y',  'click', toggleA11yPanel);
+  wireMic();
+  wireResize();
+
+  // Auto-theme: follow system changes if user chose 'auto'.
+  if (window.matchMedia) {
+    window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+      if (prefs.theme === 'auto') applyPrefs();
+    });
+  }
 })();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PREFERENCES (theme / font / size / density / accent / panels / motion)
+// Single versioned store in localStorage under `hmb.prefs`. Versioned so the
+// shape can evolve without wiping the user's choices — bump PREFS_VERSION
+// and add a migration branch in loadPrefs() instead of ignoring v-mismatch.
+// ═══════════════════════════════════════════════════════════════════════════
+const PREFS_KEY = 'hmb.prefs';
+const PREFS_VERSION = 1;
+const DEFAULT_PREFS = {
+  v: PREFS_VERSION,
+  theme: 'saloon',      // 'saloon' | 'daylight' | 'auto'
+  font: 'default',      // 'default' | 'readable' | 'dyslexic' | 'system'
+  size: 14,             // px, clamped 12–20
+  density: 'comfortable',
+  accent: null,         // null → theme default; else a hex like '#f0a830'
+  panels: { roster: true, todos: false, usage: false, log: false },
+  widths:  { roster: 200, todos: 280 },
+  reduceMotion: false,
+};
+let prefs = { ...DEFAULT_PREFS, panels: { ...DEFAULT_PREFS.panels }, widths: { ...DEFAULT_PREFS.widths } };
+
+const FONT_STACKS = {
+  default:  { sans: "'Manrope', ui-sans-serif, system-ui, sans-serif",
+              mono: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace" },
+  readable: { sans: "'Atkinson Hyperlegible', 'Inter', ui-sans-serif, sans-serif",
+              mono: "'JetBrains Mono', ui-monospace, monospace" },
+  dyslexic: { sans: "'OpenDyslexic', 'Atkinson Hyperlegible', sans-serif",
+              mono: "'OpenDyslexicMono', 'JetBrains Mono', ui-monospace, monospace" },
+  system:   { sans: "ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+              mono: "ui-monospace, Menlo, Consolas, monospace" },
+};
+
+function loadPrefs() {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw) return;
+    const obj = JSON.parse(raw);
+    if (!obj || typeof obj !== 'object' || obj.v !== PREFS_VERSION) return;
+    prefs = {
+      ...DEFAULT_PREFS,
+      ...obj,
+      panels: { ...DEFAULT_PREFS.panels, ...(obj.panels || {}) },
+      widths: { ...DEFAULT_PREFS.widths, ...(obj.widths || {}) },
+    };
+  } catch (_) { /* fall back to defaults */ }
+}
+
+function savePrefs() {
+  try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch (_) {}
+}
+
+function resolveTheme() {
+  if (prefs.theme === 'auto') {
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches)
+      ? 'daylight' : 'saloon';
+  }
+  return prefs.theme === 'daylight' ? 'daylight' : 'saloon';
+}
+
+function applyPrefs() {
+  const html = document.documentElement;
+  html.setAttribute('data-theme', resolveTheme());
+  html.setAttribute('data-reduce-motion', prefs.reduceMotion ? '1' : '0');
+  html.setAttribute('data-density', prefs.density);
+
+  const stack = FONT_STACKS[prefs.font] || FONT_STACKS.default;
+  html.style.setProperty('--font-sans', stack.sans);
+  html.style.setProperty('--font-mono', stack.mono);
+  html.style.setProperty('--app-size', (prefs.size || 14) + 'px');
+
+  // Accent override. Null → remove so the theme default wins.
+  if (prefs.accent) html.style.setProperty('--accent', prefs.accent);
+  else              html.style.removeProperty('--accent');
+
+  html.style.setProperty('--roster-w', (prefs.widths.roster || 200) + 'px');
+  html.style.setProperty('--todos-w',  (prefs.widths.todos  || 280) + 'px');
+
+  // Panel visibility — keep legacy globals in sync so existing code keeps
+  // working (and don't double-fire timers for the usage panel).
+  const roster = document.getElementById('roster');
+  const rosterHandle = document.getElementById('resize-roster');
+  if (roster) roster.classList.toggle('collapsed', !prefs.panels.roster);
+  if (rosterHandle) rosterHandle.hidden = !prefs.panels.roster;
+
+  const todos = document.getElementById('todos-panel');
+  const todosHandle = document.getElementById('resize-todos');
+  if (todos) todos.classList.toggle('collapsed', !prefs.panels.todos);
+  if (todosHandle) todosHandle.hidden = !prefs.panels.todos;
+  todosVisible = !!prefs.panels.todos;
+
+  const usageEl = document.getElementById('usage-panel');
+  if (usageEl) usageEl.classList.toggle('open', !!prefs.panels.usage);
+  usageOpen = !!prefs.panels.usage;
+
+  const logEl = document.getElementById('server-log-panel');
+  if (logEl) logEl.classList.toggle('open', !!prefs.panels.log);
+  serverLogOpen = !!prefs.panels.log;
+
+  reflectPrefsIntoA11yPanel();
+}
+
+// Everything that reads/writes the a11y panel UI lives in app-panels.js and
+// is loaded on demand by ensurePanels(). These thin stubs forward to the
+// panel module once it's been hydrated; before then they're safe no-ops
+// so applyPrefs() can call reflectPrefsIntoA11yPanel() unconditionally.
+function reflectPrefsIntoA11yPanel() {
+  if (window.__panels) window.__panels.reflectPrefs();
+  // The topbar theme-button icon state is critical-path; keep it here so
+  // the active class tracks resolveTheme() even before panels are loaded.
+  const themeBtn = document.getElementById('btn-toggle-theme');
+  if (themeBtn) themeBtn.classList.toggle('active', resolveTheme() === 'daylight');
+}
+
+function toggleA11yPanel() {
+  ensurePanels().then(() => window.__panels.toggleA11y());
+}
+
+function toggleTheme() {
+  // Quick flip in the topbar. 'auto' resolves to a concrete dark/light first
+  // so the next click stays predictable. Doesn't need the a11y panel loaded.
+  const current = resolveTheme();
+  prefs.theme = current === 'daylight' ? 'saloon' : 'daylight';
+  savePrefs(); applyPrefs();
+}
+
+// ───────── Deferred panel loader ─────────
+// Inject app-panels.min.css + app-panels.min.js on first demand. Cached so
+// subsequent calls resolve immediately. Keeping both off the initial HTML
+// is what gets Lighthouse back to 100 — they're ~300 CSS + ~500 JS lines
+// that index.html would otherwise pay for at paint time.
+let __panelsPromise = null;
+function ensurePanels() {
+  if (window.__panels) return Promise.resolve();
+  if (__panelsPromise) return __panelsPromise;
+  __panelsPromise = new Promise((resolve, reject) => {
+    const link = document.createElement('link');
+    link.rel  = 'stylesheet';
+    link.href = 'app-panels.min.css';
+    document.head.appendChild(link);
+
+    const script = document.createElement('script');
+    script.src = 'app-panels.min.js';
+    script.onload  = () => resolve();
+    script.onerror = () => reject(new Error('Failed to load app-panels.min.js'));
+    document.head.appendChild(script);
+  });
+  return __panelsPromise;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MIC — browser SpeechRecognition. Per the designer's note, when the API
+// isn't available the button stays visible but disabled with a tooltip
+// pointing at OS-native dictation so the feature doesn't silently vanish.
+// ═══════════════════════════════════════════════════════════════════════════
+function wireMic() {
+  const btn = document.getElementById('btn-mic');
+  if (!btn) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    btn.disabled = true;
+    btn.title =
+      'Voice input unavailable in this webview.\n' +
+      'Use your OS dictation: macOS Fn×2, Windows Win+H, iOS/Android keyboard mic.';
+    return;
+  }
+
+  const rec = new SR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.lang = navigator.language || 'en-US';
+
+  let state = 'idle';
+  let baseText = '';
+  let finalBuf = '';
+
+  function setIdle() {
+    state = 'idle';
+    btn.classList.remove('listening');
+    btn.title = 'Voice input (browser speech-to-text)';
+  }
+  function setListening() {
+    state = 'listening';
+    btn.classList.add('listening');
+    btn.title = 'Listening — click to stop';
+    const ta = document.getElementById('compose-text');
+    baseText = ta ? ta.value : '';
+    finalBuf = '';
+  }
+
+  rec.onstart  = setListening;
+  rec.onend    = setIdle;
+  rec.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      if (r.isFinal) finalBuf += r[0].transcript;
+      else interim += r[0].transcript;
+    }
+    const ta = document.getElementById('compose-text');
+    if (!ta) return;
+    const sep = baseText && !/\s$/.test(baseText) ? ' ' : '';
+    ta.value = baseText + sep + finalBuf + interim;
+    // Fire the input handler so slash/mention autocomplete keeps working
+    // while the user dictates.
+    ta.dispatchEvent(new Event('input'));
+  };
+  rec.onerror = (e) => {
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      toast('Mic permission denied — enable it in your browser settings.', true);
+    } else if (e.error === 'no-speech') {
+      // Normal timeout; don't bother the user.
+    } else {
+      toast('Mic error: ' + e.error, true);
+    }
+    setIdle();
+  };
+
+  btn.addEventListener('click', () => {
+    if (state === 'listening') { try { rec.stop(); } catch (_) {} }
+    else                       { try { rec.start(); } catch (_) {} }
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RESIZE HANDLES — drag between roster/feed/todos. Width persists in prefs;
+// double-click resets to the default. Collapsed state is tracked
+// independently via prefs.panels.{roster,todos}.
+// ═══════════════════════════════════════════════════════════════════════════
+function wireResize() {
+  document.querySelectorAll('.resize-handle').forEach(handle => {
+    const target = handle.dataset.target; // 'roster' | 'todos'
+    if (!target) return;
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const layout = document.querySelector('.layout');
+      if (!layout) return;
+      const startX = e.clientX;
+      const startW = prefs.widths[target] || (target === 'roster' ? 200 : 280);
+      // Roster is on the left (drag right → wider); todos is on the right
+      // (drag left → wider). The sign flips accordingly.
+      const sign   = target === 'roster' ? +1 : -1;
+      const minW   = target === 'roster' ? 140 : 220;
+      const maxW   = Math.max(260, Math.floor(layout.getBoundingClientRect().width - 320));
+
+      handle.classList.add('dragging');
+      document.body.style.userSelect = 'none';
+
+      function onMove(ev) {
+        const dx = (ev.clientX - startX) * sign;
+        const w = Math.max(minW, Math.min(maxW, startW + dx));
+        prefs.widths[target] = Math.round(w);
+        document.documentElement.style.setProperty(
+          target === 'roster' ? '--roster-w' : '--todos-w',
+          prefs.widths[target] + 'px'
+        );
+      }
+      function onUp() {
+        handle.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        savePrefs();
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+
+    handle.addEventListener('dblclick', () => {
+      prefs.widths[target] = target === 'roster' ? 200 : 280;
+      savePrefs(); applyPrefs();
+    });
+  });
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WORKER GLANCE — "Is it working?" drill-in (deferred)
+// Full implementation (render, mock data, wiring, sparkline, git tags) lives
+// in app-panels.js. Core app only keeps these forwarding stubs so a roster
+// click can open the panel without paying for the ~500 lines of glance code
+// at initial paint. ensurePanels() injects the deferred bundle on first use.
+// ═══════════════════════════════════════════════════════════════════════════
+function openWorkerGlance(workerName, workerRole) {
+  ensurePanels().then(() => window.__panels.openGlance(workerName, workerRole));
+}
+
+function closeWorkerGlance() {
+  if (window.__panels) window.__panels.closeGlance();
+}
+
+
+// Final init: now that `prefs` + helpers are all declared, hydrate from
+// localStorage and paint the first theme/font/panel state. Runs after the
+// wireEvents IIFE above — event listeners are bound, prefs are applied.
+loadPrefs();
+applyPrefs();

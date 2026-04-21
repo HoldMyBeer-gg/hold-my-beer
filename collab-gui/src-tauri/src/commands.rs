@@ -1,18 +1,77 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-use crate::{gui_config_path, collab_toml_path, AppState, SavedConfig};
+use crate::{gui_config_path, legacy_gui_config_path, collab_toml_path, AppState, SavedConfig};
+
+/// User's interactive-shell PATH, cached at first use.
+///
+/// macOS GUI apps launched from Finder / `open` inherit launchd's minimal
+/// PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) — they do NOT read `.zshrc` /
+/// `.bash_profile` / `.zshenv`. Sidecars we spawn inherit that minimal
+/// PATH, and so do the worker daemons they fork, which means a worker
+/// trying to run `claude` fails with ENOENT because the real `claude`
+/// binary lives in `~/.local/bin` / `~/.cargo/bin` / `/opt/homebrew/bin`
+/// / etc. that the GUI has never heard of.
+///
+/// Fix: once, lazily, we shell out to the user's login shell in
+/// interactive mode (`$SHELL -lic 'printf %s "$PATH"'`) to resolve the
+/// PATH they actually see in a terminal, then inject it as `PATH` on
+/// every sidecar spawn so workers can find their CLI tools.
+///
+/// Falls back to the inherited PATH if anything goes wrong — no worse
+/// than the pre-fix behaviour.
+fn resolve_user_path() -> String {
+    static CACHED: OnceLock<String> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+            // `-l` login shell → reads zprofile/profile. `-i` interactive →
+            // reads zshrc/bashrc. Together they match what a fresh terminal
+            // sees. `printf %s` avoids a trailing newline.
+            let output = std::process::Command::new(&shell)
+                .args(["-lic", "printf %s \"$PATH\""])
+                .output();
+            let resolved = match output {
+                Ok(o) if o.status.success() => {
+                    String::from_utf8_lossy(&o.stdout).trim().to_string()
+                }
+                _ => String::new(),
+            };
+            let fallback = std::env::var("PATH").unwrap_or_default();
+            if resolved.is_empty() {
+                eprintln!("[path] resolving user shell PATH failed — falling back to inherited PATH");
+                fallback
+            } else if resolved == fallback {
+                // Already matches — no-op for people launching from a terminal.
+                resolved
+            } else {
+                eprintln!("[path] resolved user shell PATH: {resolved}");
+                resolved
+            }
+        })
+        .clone()
+}
 
 // ─── Config commands ──────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub fn load_config() -> SavedConfig {
+    // Prefer the canonical platform-native location. If nothing is there,
+    // fall back to the old hard-coded `$HOME/.config/...` path so users
+    // who set up before the fix don't lose their wizard state. The first
+    // subsequent save_config call rewrites at the canonical path.
+    let from = |p: PathBuf| -> Option<SavedConfig> {
+        std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    };
     gui_config_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
+        .and_then(from)
+        .or_else(|| legacy_gui_config_path().and_then(from))
         .unwrap_or_default()
 }
 
@@ -26,12 +85,22 @@ pub fn save_config(config: SavedConfig) -> Result<(), String> {
         std::fs::write(&path, json).map_err(|e| e.to_string())?;
     }
 
-    // Also write ~/.collab.toml so the collab CLI picks up token + host
+    // Also write ~/.collab.toml so the collab CLI picks up token + host.
+    // The admin token is written as a comment so users can see it exists,
+    // but the CLI reads admin tokens from COLLAB_ADMIN_TOKEN env only (we
+    // don't want two admin secrets auto-loading if someone has a legacy
+    // token in ~/.collab.toml).
     if let Some(toml_path) = collab_toml_path() {
-        let toml = format!(
+        let mut toml = format!(
             "host = \"{}\"\ntoken = \"{}\"\n",
             config.server_url, config.token
         );
+        if !config.admin_token.is_empty() {
+            toml.push_str(&format!(
+                "# admin_token = \"{}\"  # set COLLAB_ADMIN_TOKEN in your shell to use\n",
+                config.admin_token
+            ));
+        }
         std::fs::write(toml_path, toml).map_err(|e| e.to_string())?;
     }
 
@@ -87,12 +156,19 @@ pub fn home_dir() -> Option<String> {
 
 // ─── Server lifecycle ─────────────────────────────────────────────────────────
 
+/// Spawn the bundled `collab-server` sidecar.
+///
+/// `admin_token` is the admin secret the GUI generated for this session —
+/// passed as `COLLAB_ADMIN_TOKEN` (highest priority in the server's token
+/// lookup) so it beats any stale `token = …` in `~/.collab.toml`. Workers
+/// later authenticate with the team token via their own `COLLAB_TOKEN`
+/// env; the two are deliberately distinct.
 #[tauri::command]
 pub async fn start_server(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     server_url: String,
-    token: String,
+    admin_token: String,
     project_dir: String,
 ) -> Result<(), String> {
     let port: u16 = server_url
@@ -129,8 +205,15 @@ pub async fn start_server(
         .shell()
         .sidecar("collab-server")
         .map_err(|e| format!("Could not locate collab-server sidecar: {e}"))?
-        .env("COLLAB_TOKEN", &token)
+        // COLLAB_ADMIN_TOKEN is the authoritative admin slot; server lookup
+        // priority is COLLAB_ADMIN_TOKEN > COLLAB_TOKEN > ~/.collab.toml, so
+        // setting it here wins even if the user's shell has a stale
+        // COLLAB_TOKEN or their ~/.collab.toml points at a different team.
+        .env("COLLAB_ADMIN_TOKEN", &admin_token)
         .env("COLLAB_HOST", "0.0.0.0")
+        // See `resolve_user_path` — without this, worker daemons spawned
+        // downstream inherit launchd's minimal PATH and can't find `claude`.
+        .env("PATH", resolve_user_path())
         .args(["--port", &port.to_string()])
         .current_dir(cwd);
 
@@ -277,6 +360,13 @@ pub async fn run_command(
         .args(&args);
     if let Some(dir) = &cwd {
         cmd = cmd.current_dir(PathBuf::from(dir));
+    }
+    // Inject the user's interactive shell PATH so worker daemons spawned
+    // by `collab start all` can find `claude` / `cursor` / `codex` / etc.
+    // Caller-supplied `envs` win if they include their own PATH.
+    let caller_overrides_path = envs.iter().any(|(k, _)| k == "PATH");
+    if !caller_overrides_path {
+        cmd = cmd.env("PATH", resolve_user_path());
     }
     for (k, v) in &envs {
         cmd = cmd.env(k, v);

@@ -181,6 +181,69 @@ pub enum LeaseOutcome {
     },
 }
 
+/// Delta report a worker sends to the server after each CLI invocation.
+/// Matches `collab_server::UsageReport`.
+///
+/// `input_tokens` / `cache_creation_tokens` / `cache_read_tokens` are the
+/// three disjoint buckets claude's API returns for the prompt side — adding
+/// them gives total input tokens. Reporting them separately lets the server
+/// (and any /usage consumer) compute cache hit rate as
+/// `cache_read / (input + cache_creation + cache_read)` — the signal for
+/// whether prompt caching is earning its keep.
+#[derive(Debug, Serialize)]
+pub struct UsageReport<'a> {
+    pub worker: &'a str,
+    pub duration_secs: u64,
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    pub output_tokens: u64,
+    pub tier: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli: Option<&'a str>,
+}
+
+/// Running totals returned by GET /usage for the caller's team. Mirrors
+/// `collab_server::UsageResponse` and what the old local usage.log
+/// aggregate produced.
+#[derive(Debug, Deserialize)]
+pub struct UsageRow {
+    pub worker: String,
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    pub output_tokens: u64,
+    pub duration_secs: u64,
+    pub calls: u64,
+    pub light_calls: u64,
+    pub full_calls: u64,
+    pub cost_usd: f64,
+    pub cli: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UsageResponse {
+    pub workers: Vec<UsageRow>,
+    pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_cache_creation_tokens: u64,
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_duration_secs: u64,
+    pub total_calls: u64,
+    pub total_light_calls: u64,
+    pub total_full_calls: u64,
+    pub total_cost_usd: f64,
+}
+
 #[async_trait]
 pub trait CollabApi: Send + Sync {
     async fn add_message(&self, recipient: &str, content: &str, refs: Option<Vec<String>>) -> Result<()>;
@@ -190,6 +253,9 @@ pub trait CollabApi: Send + Sync {
     async fn fetch_history_pub(&self, instance_id: &str) -> Result<Vec<Message>>;
     async fn fetch_todos(&self, instance: &str) -> Result<Vec<Todo>>;
     async fn heartbeat(&self, role: Option<&str>) -> Result<()>;
+    /// Post a per-call usage delta to the server. Best-effort — the worker
+    /// keeps running if the server is unreachable.
+    async fn report_usage(&self, report: &UsageReport<'_>) -> Result<()>;
 
     /// Acquire or extend the singleton worker lease for this instance.
     /// Server-side uniqueness is enforced on (team_id, instance_id) — two
@@ -244,6 +310,9 @@ impl CollabApi for CollabClient {
     async fn release_lease(&self, pid: i64) -> Result<()> {
         CollabClient::release_lease(self, pid).await
     }
+    async fn report_usage(&self, report: &UsageReport<'_>) -> Result<()> {
+        CollabClient::report_usage(self, report).await
+    }
 
     fn base_url(&self) -> &str { &self.base_url }
     fn bearer_token(&self) -> Option<&str> { self.token.as_deref() }
@@ -280,6 +349,30 @@ impl CollabClient {
             .send()
             .await?;
         Ok(())
+    }
+
+    /// Append a per-call usage delta to the server's running totals. The
+    /// server upserts on (team_id, worker) — no per-call rows kept.
+    pub async fn report_usage(&self, report: &UsageReport<'_>) -> Result<()> {
+        let url = format!("{}/usage", self.base_url);
+        let resp = self.auth(self.client.post(&url))
+            .json(report)
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(anyhow::anyhow!("usage report failed: HTTP {}", resp.status()));
+        }
+        Ok(())
+    }
+
+    /// Fetch team-scoped running totals. Scoping is by the bearer token.
+    pub async fn fetch_usage(&self) -> Result<UsageResponse> {
+        let url = format!("{}/usage", self.base_url);
+        let resp = self.auth(self.client.get(&url)).send().await?;
+        if !resp.status().is_success() {
+            return Err(anyhow::anyhow!("fetch usage failed: HTTP {}", resp.status()));
+        }
+        Ok(resp.json::<UsageResponse>().await?)
     }
 
     /// Acquire or heartbeat the singleton worker lease. Callers pass their
@@ -359,7 +452,10 @@ impl CollabClient {
         let response = self.auth(self.client.get(&url)).send().await?;
 
         if !response.status().is_success() {
-            anyhow::bail!("Failed to fetch messages: {}", response.status());
+            // Include the URL so the user (and the config-resolution test
+            // suite) can see which server we tried — a bare `401 Unauthorized`
+            // is useless when you're debugging which config got loaded.
+            anyhow::bail!("Failed to fetch messages from {}: {}", url, response.status());
         }
 
         let mut messages: Vec<Message> = response.json().await?;
@@ -944,10 +1040,10 @@ impl CollabClient {
         println!("→ @{}  {}", todo.instance, &todo.hash[..7]);
         println!("  {}", todo.description);
 
-        // Wake the worker — send a ping so it picks up the new task immediately
-        let ping = format!("📋 New task assigned: {}", todo.description);
-        let _ = self.add_message(&todo.instance, &ping, None).await;
-
+        // Do NOT post a "new task assigned" notification here. The server
+        // inserts one atomically with the todo (see collab-server:create_todo)
+        // and broadcasts it via SSE — doing it here too produced a visible
+        // duplicate, once without the emoji (server) and once with (client).
         Ok(())
     }
 

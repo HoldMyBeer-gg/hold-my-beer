@@ -1,5 +1,3 @@
-import * as fs from "fs";
-import * as path from "path";
 import * as vscode from "vscode";
 import type { CollabApi } from "./api";
 import type { CollabResolvedConfig } from "./config";
@@ -102,27 +100,39 @@ export function registerCollabCommands(
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("collab.showUsage", () => {
+    vscode.commands.registerCommand("collab.showUsage", async () => {
       deps.outputChannel.clear();
       deps.outputChannel.show(true);
-      const folders = vscode.workspace.workspaceFolders;
-      if (!folders?.length) {
-        deps.outputChannel.appendLine("No workspace folder — open a project to read .collab/usage.log.");
-        return;
-      }
-      const logPath = path.join(folders[0].uri.fsPath, ".collab", "usage.log");
       try {
-        if (!fs.existsSync(logPath)) {
-          deps.outputChannel.appendLine(`File not found: ${logPath}`);
+        const usage = await deps.getApi().getUsage();
+        if (!usage.workers.length) {
+          deps.outputChannel.appendLine("No usage data yet. Workers report to the server after each invocation.");
           return;
         }
-        const raw = fs.readFileSync(logPath, "utf8");
-        deps.outputChannel.appendLine(`— ${logPath} —`);
-        deps.outputChannel.appendLine("");
-        deps.outputChannel.appendLine(raw);
+        const pad = (s: string | number, n: number) => String(s).padEnd(n);
+        const padL = (s: string | number, n: number) => String(s).padStart(n);
+        const anyCost = usage.total_cost_usd > 0;
+
+        deps.outputChannel.appendLine(
+          `${pad("Worker", 20)} ${padL("Input", 10)} ${padL("Output", 10)} ${padL("Calls", 6)} ${padL("Secs", 8)}  ${pad("CLI", 10)} Tiers` + (anyCost ? "     Cost" : "")
+        );
+        deps.outputChannel.appendLine("─".repeat(anyCost ? 88 : 80));
+        for (const w of usage.workers) {
+          const tiers = `${w.full_calls}F/${w.light_calls}L`;
+          const cost = anyCost ? `  $${w.cost_usd.toFixed(4)}` : "";
+          deps.outputChannel.appendLine(
+            `${pad(w.worker, 20)} ${padL(w.input_tokens, 10)} ${padL(w.output_tokens, 10)} ${padL(w.calls, 6)} ${padL(w.duration_secs, 8)}  ${pad(w.cli || "?", 10)} ${pad(tiers, 8)}${cost}`
+          );
+        }
+        deps.outputChannel.appendLine("─".repeat(anyCost ? 88 : 80));
+        const totalTiers = `${usage.total_full_calls}F/${usage.total_light_calls}L`;
+        const totalCost = anyCost ? `  $${usage.total_cost_usd.toFixed(4)}` : "";
+        deps.outputChannel.appendLine(
+          `${pad("TOTAL", 20)} ${padL(usage.total_input_tokens, 10)} ${padL(usage.total_output_tokens, 10)} ${padL(usage.total_calls, 6)} ${padL(usage.total_duration_secs, 8)}  ${pad("", 10)} ${pad(totalTiers, 8)}${totalCost}`
+        );
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
-        deps.outputChannel.appendLine(`Error reading usage log: ${err}`);
+        deps.outputChannel.appendLine(`Failed to fetch usage: ${err}`);
       }
     })
   );
