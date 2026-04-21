@@ -222,10 +222,19 @@ impl WorkerHarness {
             first_message_time: Arc::new(Mutex::new(None)),
             hands_off_to,
             teammates,
+            // 900s (15 min) per call. Earlier default was 300s but that
+            // killed sonnet workers mid-task on real work: with ~50KB of
+            // prompt context plus 4–8 tool calls (Bash/Read/Edit cycles
+            // against a real repo), a single turn routinely hits 6–10 min
+            // before the model returns its JSON envelope. Symptom when too
+            // tight: worker appears stuck, `.worker-state.json` updates
+            // but no messages ever go out — the debug file lands with
+            // `KIND: timeout`. The env override is kept for users who want
+            // to ratchet it tighter for cheap models or trivial tasks.
             cli_timeout_secs: std::env::var("COLLAB_CLI_TIMEOUT_SECS")
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
-                .unwrap_or(300),
+                .unwrap_or(900),
         }
     }
 
