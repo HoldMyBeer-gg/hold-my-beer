@@ -96,7 +96,7 @@ Register these commands:
 | Collab: Check Messages | collab.checkMessages | Fetch and show unread in output channel |
 | Collab: Show Roster | collab.showRoster | Focus the roster TreeView |
 | Collab: Open Chat | collab.openChat | Open/focus the chat webview panel |
-| Collab: Show Usage | collab.showUsage | Read .collab/usage.log and show formatted in output channel |
+| Collab: Show Usage | collab.showUsage | Fetch running totals from server GET /usage and render per-worker + TOTAL in output channel |
 
 ### 6. Status Bar
 

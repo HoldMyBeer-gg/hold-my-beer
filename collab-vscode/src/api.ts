@@ -27,6 +27,30 @@ export interface Todo {
   completed_at?: string | null;
 }
 
+export interface UsageRow {
+  worker: string;
+  input_tokens: number;
+  output_tokens: number;
+  duration_secs: number;
+  calls: number;
+  light_calls: number;
+  full_calls: number;
+  cost_usd: number;
+  cli: string;
+  updated_at: string;
+}
+
+export interface UsageResponse {
+  workers: UsageRow[];
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_duration_secs: number;
+  total_calls: number;
+  total_light_calls: number;
+  total_full_calls: number;
+  total_cost_usd: number;
+}
+
 function authHeaders(token: string): Record<string, string> {
   return {
     Authorization: `Bearer ${token}`,
@@ -133,6 +157,13 @@ export class CollabApi {
       }),
     });
     return handleJson<Todo>(res);
+  }
+
+  async getUsage(): Promise<UsageResponse> {
+    const res = await fetch(this.base("/usage"), {
+      headers: authHeaders(this.cfg.token),
+    });
+    return handleJson<UsageResponse>(res);
   }
 
   async completeTodo(hashPrefix: string): Promise<void> {

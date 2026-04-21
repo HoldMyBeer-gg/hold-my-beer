@@ -56,7 +56,7 @@ fn collab() -> Command {
 // the admin token. `collab team show` then 403'd, and the error didn't
 // explain why or how to recover.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn team_show_with_team_token_returns_helpful_admin_hint() {
     let server = start_server().await;
     let tmp = TempDir::new().unwrap();
@@ -108,7 +108,7 @@ async fn team_show_with_team_token_returns_helpful_admin_hint() {
 // "auth: skipped — no instance set" when a human admin was trying to
 // diagnose their token. Humans-as-admins don't have an instance.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn whoami_probes_auth_even_without_instance() {
     let server = start_server().await;
     let tmp = TempDir::new().unwrap();
@@ -145,7 +145,7 @@ async fn whoami_probes_auth_even_without_instance() {
 // Incident: the user couldn't tell if their $COLLAB_TOKEN was an admin or
 // team token. `collab whoami` should label it.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn whoami_labels_token_as_team_when_token_is_team_token() {
     let server = start_server().await;
     let tmp = TempDir::new().unwrap();
@@ -187,7 +187,7 @@ async fn whoami_labels_token_as_team_when_token_is_team_token() {
 // set in the shell from a previous session. User wasted 10 minutes editing
 // .env with no effect, then discovered `eval $(cat .env)` was needed.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dotenv_shadow_prints_warning_when_shell_shadows_env_file() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("proj");
@@ -220,7 +220,7 @@ async fn dotenv_shadow_prints_warning_when_shell_shadows_env_file() {
 // "Manifest not found. Run 'collab init workers.yml' ..." because the
 // lifecycle commands only knew about the legacy workers.json manifest.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_commands_find_team_yaml_via_marker() {
     let server = start_server().await;
     let tmp = TempDir::new().unwrap();
@@ -266,7 +266,7 @@ async fn lifecycle_commands_find_team_yaml_via_marker() {
 // auth, because no team token exists on the server. The command's output
 // didn't tell them to run `collab team create` next.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn adopt_output_names_the_next_command_to_run() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("adoptee");
@@ -305,7 +305,7 @@ async fn adopt_output_names_the_next_command_to_run() {
 // cause fix was to introduce COLLAB_ADMIN_TOKEN and have admin commands
 // prefer it. Assert both exist side-by-side without conflict.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn admin_token_and_team_token_coexist_via_separate_env_vars() {
     let server = start_server().await;
     let tmp = TempDir::new().unwrap();
@@ -337,7 +337,7 @@ async fn admin_token_and_team_token_coexist_via_separate_env_vars() {
 // mention the --init-env / --generate-token escape hatches that land the
 // user unstuck in 10 seconds.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_no_token_error_mentions_init_env() {
     let tmp = TempDir::new().unwrap();
     let out = Command::cargo_bin("collab-server")
@@ -363,7 +363,7 @@ async fn server_no_token_error_mentions_init_env() {
 // writes COLLAB_ADMIN_TOKEN=... so the two secrets are structurally
 // separated at file level.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn init_env_writes_admin_token_env_var_not_plain_token() {
     let tmp = TempDir::new().unwrap();
     let out = Command::cargo_bin("collab-server")

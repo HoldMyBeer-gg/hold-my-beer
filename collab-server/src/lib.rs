@@ -158,6 +158,64 @@ pub struct LeaseConflict {
     pub seconds_since_heartbeat: i64,
 }
 
+/// Delta payload sent by workers after each CLI invocation. The server
+/// adds these to the running per-(team, worker) counters — it does not
+/// store per-call history. Cost is optional because only the Claude CLI
+/// surfaces real USD; other CLIs leave it unset.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UsageReport {
+    pub worker: String,
+    pub duration_secs: u64,
+    pub input_tokens: u64,
+    /// New tokens written to the prompt cache on this call.
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    /// Tokens served from the prompt cache on this call — the signal for
+    /// whether caching is doing any work.
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    pub output_tokens: u64,
+    pub tier: String,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub cli: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UsageRow {
+    pub worker: String,
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    pub output_tokens: u64,
+    pub duration_secs: u64,
+    pub calls: u64,
+    pub light_calls: u64,
+    pub full_calls: u64,
+    pub cost_usd: f64,
+    pub cli: String,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UsageResponse {
+    pub workers: Vec<UsageRow>,
+    pub total_input_tokens: u64,
+    #[serde(default)]
+    pub total_cache_creation_tokens: u64,
+    #[serde(default)]
+    pub total_cache_read_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_duration_secs: u64,
+    pub total_calls: u64,
+    pub total_light_calls: u64,
+    pub total_full_calls: u64,
+    pub total_cost_usd: f64,
+}
+
 /// Broadcast payload for SSE. Carries the resolved team_id alongside the
 /// message so each subscriber's SSE filter can drop messages for other
 /// teams — the Message body itself stays team-unaware for backwards
@@ -286,6 +344,8 @@ pub fn create_app(state: AppState) -> Router {
         .route("/todos/:hash/done", patch(complete_todo))
         .route("/worker/lease", post(acquire_lease))
         .route("/worker/lease/:instance_id", delete(release_lease))
+        .route("/usage", post(report_usage))
+        .route("/usage", get(get_usage))
         .route("/admin/teams", get(list_teams))
         .route("/admin/teams", post(create_team))
         .route("/admin/teams/:team_id/tokens", post(mint_team_token))
@@ -1398,6 +1458,157 @@ async fn get_metrics(
     })))
 }
 
+async fn report_usage(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UsageReport>,
+) -> Result<StatusCode, StatusCode> {
+    if payload.worker.len() > MAX_INSTANCE_ID_LEN || !is_valid_identifier(&payload.worker) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    // `light` is accepted for back-compat with pre-tier-drop workers that may
+    // still be in-flight, but every new call reports `full` since Light tier
+    // no longer exists. `light_calls` stays as historical-only in the DB.
+    let tier = match payload.tier.as_str() {
+        "light" | "full" => payload.tier.as_str(),
+        _ => return Err(StatusCode::BAD_REQUEST),
+    };
+    let light_delta: i64 = if tier == "light" { 1 } else { 0 };
+    let full_delta: i64 = 1 - light_delta;
+    let team_key = auth.team_id.clone().unwrap_or_default();
+    let cost = payload.cost_usd.unwrap_or(0.0);
+    let cli = payload.cli.unwrap_or_default();
+    let now_iso = Utc::now().to_rfc3339();
+
+    sqlx::query(
+        r#"
+        INSERT INTO team_usage_totals (
+            team_id, worker, input_tokens, cache_creation_tokens, cache_read_tokens,
+            output_tokens, duration_secs,
+            calls, light_calls, full_calls, cost_usd, cli, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        ON CONFLICT(team_id, worker) DO UPDATE SET
+            input_tokens          = input_tokens          + excluded.input_tokens,
+            cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+            cache_read_tokens     = cache_read_tokens     + excluded.cache_read_tokens,
+            output_tokens         = output_tokens         + excluded.output_tokens,
+            duration_secs         = duration_secs         + excluded.duration_secs,
+            calls                 = calls                 + 1,
+            light_calls           = light_calls           + excluded.light_calls,
+            full_calls            = full_calls            + excluded.full_calls,
+            cost_usd              = cost_usd              + excluded.cost_usd,
+            cli                   = CASE WHEN excluded.cli != '' THEN excluded.cli ELSE cli END,
+            updated_at            = excluded.updated_at
+        "#,
+    )
+    .bind(&team_key)
+    .bind(&payload.worker)
+    .bind(payload.input_tokens as i64)
+    .bind(payload.cache_creation_tokens as i64)
+    .bind(payload.cache_read_tokens as i64)
+    .bind(payload.output_tokens as i64)
+    .bind(payload.duration_secs as i64)
+    .bind(light_delta)
+    .bind(full_delta)
+    .bind(cost)
+    .bind(&cli)
+    .bind(&now_iso)
+    .execute(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!("usage upsert failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn get_usage(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<UsageResponse>, StatusCode> {
+    let team_key = auth.team_id.clone().unwrap_or_default();
+    let rows = sqlx::query(
+        r#"
+        SELECT worker, input_tokens, cache_creation_tokens, cache_read_tokens,
+               output_tokens, duration_secs,
+               calls, light_calls, full_calls, cost_usd, cli, updated_at
+        FROM team_usage_totals
+        WHERE team_id = ?
+        ORDER BY (input_tokens + cache_creation_tokens + cache_read_tokens + output_tokens) DESC
+        "#,
+    )
+    .bind(&team_key)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| {
+        tracing::error!("usage fetch failed: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut workers = Vec::with_capacity(rows.len());
+    let mut total_in = 0u64;
+    let mut total_cache_creation = 0u64;
+    let mut total_cache_read = 0u64;
+    let mut total_out = 0u64;
+    let mut total_dur = 0u64;
+    let mut total_calls = 0u64;
+    let mut total_light = 0u64;
+    let mut total_full = 0u64;
+    let mut total_cost = 0.0f64;
+    for row in rows {
+        let input_tokens: i64 = row.get("input_tokens");
+        let cache_creation_tokens: i64 = row.get("cache_creation_tokens");
+        let cache_read_tokens: i64 = row.get("cache_read_tokens");
+        let output_tokens: i64 = row.get("output_tokens");
+        let duration_secs: i64 = row.get("duration_secs");
+        let calls: i64 = row.get("calls");
+        let light_calls: i64 = row.get("light_calls");
+        let full_calls: i64 = row.get("full_calls");
+        let cost_usd: f64 = row.get("cost_usd");
+        let updated_str: String = row.get("updated_at");
+        let updated_at = DateTime::parse_from_rfc3339(&updated_str)
+            .map(|t| t.with_timezone(&Utc))
+            .unwrap_or_else(|_| Utc::now());
+        total_in += input_tokens as u64;
+        total_cache_creation += cache_creation_tokens as u64;
+        total_cache_read += cache_read_tokens as u64;
+        total_out += output_tokens as u64;
+        total_dur += duration_secs as u64;
+        total_calls += calls as u64;
+        total_light += light_calls as u64;
+        total_full += full_calls as u64;
+        total_cost += cost_usd;
+        workers.push(UsageRow {
+            worker: row.get("worker"),
+            input_tokens: input_tokens as u64,
+            cache_creation_tokens: cache_creation_tokens as u64,
+            cache_read_tokens: cache_read_tokens as u64,
+            output_tokens: output_tokens as u64,
+            duration_secs: duration_secs as u64,
+            calls: calls as u64,
+            light_calls: light_calls as u64,
+            full_calls: full_calls as u64,
+            cost_usd,
+            cli: row.get("cli"),
+            updated_at,
+        });
+    }
+
+    Ok(Json(UsageResponse {
+        workers,
+        total_input_tokens: total_in,
+        total_cache_creation_tokens: total_cache_creation,
+        total_cache_read_tokens: total_cache_read,
+        total_output_tokens: total_out,
+        total_duration_secs: total_dur,
+        total_calls,
+        total_light_calls: total_light,
+        total_full_calls: total_full,
+        total_cost_usd: total_cost,
+    }))
+}
+
 async fn cleanup_old_messages(
     Extension(auth): Extension<AuthContext>,
     State(state): State<Arc<AppState>>,
@@ -1502,8 +1713,10 @@ async fn create_todo(
         completed_at: None,
     };
 
-    // Wake the worker via SSE — send a ping message so it picks up the task immediately
-    let ping_content = format!("New task assigned: {}", payload.description);
+    // Wake the worker via SSE — send a ping message so it picks up the task
+    // immediately. This is the *only* delegation notification; the CLI's
+    // todo_add used to post its own too, which produced a visible duplicate.
+    let ping_content = format!("📋 New task assigned: {}", payload.description);
     let ping_id = Uuid::new_v4().to_string();
     let ping_ts = Utc::now();
     let mut ping_hasher = Sha1::new();
@@ -2061,5 +2274,92 @@ mod lease_tests {
         assert_eq!(r1.status(), StatusCode::OK);
         let r2 = app.clone().oneshot(create_team_req(Some("a"), "dup")).await.unwrap();
         assert_eq!(r2.status(), StatusCode::CONFLICT);
+    }
+
+    // ── Usage endpoints ───────────────────────────────────────────────────
+
+    fn usage_post_req(token: Option<&str>, worker: &str, input: u64, output: u64, tier: &str, cost: Option<f64>, cli: Option<&str>) -> HttpRequest<Body> {
+        let mut body = serde_json::json!({
+            "worker": worker,
+            "duration_secs": 1,
+            "input_tokens": input,
+            "output_tokens": output,
+            "tier": tier,
+        });
+        if let Some(c) = cost { body["cost_usd"] = serde_json::json!(c); }
+        if let Some(c) = cli { body["cli"] = serde_json::json!(c); }
+        let mut builder = HttpRequest::builder()
+            .method("POST")
+            .uri("/usage")
+            .header("content-type", "application/json");
+        if let Some(t) = token {
+            builder = builder.header("Authorization", format!("Bearer {}", t));
+        }
+        builder.body(Body::from(body.to_string())).unwrap()
+    }
+
+    fn usage_get_req(token: Option<&str>) -> HttpRequest<Body> {
+        let mut builder = HttpRequest::builder().method("GET").uri("/usage");
+        if let Some(t) = token {
+            builder = builder.header("Authorization", format!("Bearer {}", t));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn usage_report_sums_per_worker_totals() {
+        let app = app_with_team("team-a", "tok-a").await;
+
+        // Two calls for "builder" — full + light — plus one call for "reviewer".
+        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "builder", 100, 50, "full", Some(0.02), Some("claude"))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "builder", 200, 80, "light", Some(0.01), Some("claude"))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "reviewer", 40, 20, "full", None, Some("ollama"))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT);
+
+        let resp = app.clone().oneshot(usage_get_req(Some("tok-a"))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let usage: UsageResponse = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+        assert_eq!(usage.workers.len(), 2);
+        assert_eq!(usage.total_input_tokens, 340);
+        assert_eq!(usage.total_output_tokens, 150);
+        assert_eq!(usage.total_calls, 3);
+        assert_eq!(usage.total_full_calls, 2);
+        assert_eq!(usage.total_light_calls, 1);
+        // Heaviest worker first — builder wins with 430 total tokens vs reviewer's 60.
+        assert_eq!(usage.workers[0].worker, "builder");
+        assert_eq!(usage.workers[0].calls, 2);
+        assert_eq!(usage.workers[0].full_calls, 1);
+        assert_eq!(usage.workers[0].light_calls, 1);
+        assert!((usage.workers[0].cost_usd - 0.03).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn usage_is_isolated_between_teams() {
+        let app = app_with_team("team-a", "tok-a").await;
+        // Seed a second team on the same DB via admin (legacy token off — fake another team by direct insert).
+        // Simpler: spin up a fresh app for team-b and make sure team-a sees nothing of team-b's deltas.
+        let app_b = app_with_team("team-b", "tok-b").await;
+        let _ = app_b.clone().oneshot(usage_post_req(Some("tok-b"), "builder", 999, 999, "full", None, None)).await.unwrap();
+
+        let resp = app.clone().oneshot(usage_get_req(Some("tok-a"))).await.unwrap();
+        let usage: UsageResponse = serde_json::from_slice(&body_bytes(resp).await).unwrap();
+        assert_eq!(usage.workers.len(), 0);
+        assert_eq!(usage.total_input_tokens, 0);
+    }
+
+    #[tokio::test]
+    async fn usage_rejects_invalid_worker_name() {
+        let app = app_with_team("team-a", "tok-a").await;
+        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "bad name!", 1, 1, "full", None, None)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn usage_rejects_unknown_tier() {
+        let app = app_with_team("team-a", "tok-a").await;
+        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "builder", 1, 1, "heavy", None, None)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     }
 }

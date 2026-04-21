@@ -116,7 +116,17 @@ pub async fn show(
     }
     let resp = req.send().await?;
     if !resp.status().is_success() {
-        anyhow::bail!("lookup failed: HTTP {}", resp.status());
+        let status = resp.status();
+        if status.as_u16() == 403 {
+            let hint = if admin_token.map_or(false, |t| t.starts_with("tm_")) {
+                "Your COLLAB_TOKEN looks like a team token (tm_…), but `collab team show` needs an admin token. \
+                 Set COLLAB_ADMIN_TOKEN (adm_…) to the admin secret and retry."
+            } else {
+                "`collab team show` requires an admin token. Set COLLAB_ADMIN_TOKEN (adm_…) to the admin secret and retry."
+            };
+            anyhow::bail!("HTTP 403 Forbidden — {}", hint);
+        }
+        anyhow::bail!("lookup failed: HTTP {}", status);
     }
     let teams: Vec<TeamInfo> = resp.json().await?;
     let team = teams
@@ -253,7 +263,6 @@ pub fn adopt(workers_yml: &Path, team_yml_path: &Path) -> Result<()> {
             server: legacy.server.clone(),
             shared_data_dir: legacy.shared_data_dir.clone(),
             cli_template: legacy.cli_template.clone(),
-            cli_template_light: legacy.cli_template_light.clone(),
             model: legacy.model.clone(),
             workers: Vec::new(),
         }
@@ -284,7 +293,6 @@ pub fn adopt(workers_yml: &Path, team_yml_path: &Path) -> Result<()> {
             color: lw.color,
             model: lw.model.clone(),
             cli_template: lw.cli_template.clone(),
-            cli_template_light: lw.cli_template_light.clone(),
             hands_off_to: lw.hands_off_to.clone(),
         });
     }
@@ -398,8 +406,6 @@ struct TeamConfigMut {
     pub shared_data_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli_template: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cli_template_light: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub workers: Vec<TeamWorker>,

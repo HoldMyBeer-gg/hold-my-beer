@@ -549,6 +549,46 @@ async fn main() -> Result<()> {
             )
         })?;
 
+        // Install a panic hook that writes to /tmp/collab-worker-errors.log.
+        // Workers spawned by the GUI have stderr redirected to /dev/null
+        // (see collab-gui commands::resolve_user_path + lifecycle's
+        // configure_detached_stdio), so Rust's default panic output vanishes.
+        // Without this hook, a panic inside the batch-processor or CLI-spawn
+        // task produces a silent stall: the heartbeat keeps firing (it lives
+        // in a different task) and presence says "working on msg from …"
+        // forever, with no error ever surfaced. Panic details go through
+        // the same log file as our log_error path so `tail` shows both.
+        {
+            let panicking_instance = instance_id.clone();
+            std::panic::set_hook(Box::new(move |info| {
+                use std::io::Write;
+                let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
+                let location = info.location()
+                    .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                    .unwrap_or_else(|| "<unknown>".into());
+                let payload = info.payload();
+                let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
+                    (*s).to_string()
+                } else if let Some(s) = payload.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "<non-string panic payload>".into()
+                };
+                let entry = format!(
+                    "[{now}] @{panicking_instance}: PANIC at {location}: {msg}\n{:?}\n",
+                    std::backtrace::Backtrace::capture(),
+                );
+                let _ = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/collab-worker-errors.log")
+                    .and_then(|mut f| f.write_all(entry.as_bytes()));
+                // Also print to stderr — useful when running from a terminal
+                // where the default hook would've printed anyway.
+                eprintln!("{entry}");
+            }));
+        }
+
         // Manifest resolution walks two paths in order:
         //   1. `.collab/team-managed` marker at cwd → load team.yml.
         //   2. `.collab/workers.json` manifest (legacy single-repo path).
@@ -561,7 +601,7 @@ async fn main() -> Result<()> {
         let probe_dir = workdir
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let (hands_off_to, teammates, manifest_cli_template, manifest_cli_template_light,
+        let (hands_off_to, teammates, manifest_cli_template,
              manifest_codebase, manifest_model) =
             resolve_worker_manifest(&probe_dir, &instance_id);
 
@@ -635,18 +675,41 @@ async fn main() -> Result<()> {
             }
         });
 
-        // Release the lease on graceful shutdown (Ctrl+C). We don't wait
-        // for the release to complete — a stale lease gets TTL'd anyway
-        // and we'd rather exit fast than block on a slow server.
+        // Release the lease AND clear the presence row on graceful shutdown
+        // (Ctrl+C / SIGTERM). Without the presence delete, `collab stop all`
+        // on Unix — which uses `killpg` → SIGTERM — leaves stale presence
+        // rows behind; if the GUI immediately relaunches, the preflight
+        // freshness check sees "heartbeated 5 seconds ago" and refuses to
+        // start the newly-spawned worker. SIGINT (Ctrl+C) hits the same
+        // cleanup path.
+        //
+        // Best-effort: we don't wait on the HTTP calls — a slow server
+        // would block exit, and stale presence also ages out naturally.
         let shutdown_client = client.clone();
         let shutdown_instance = instance_id.clone();
         tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                eprintln!("\n[{}] @{} releasing lease and exiting…",
-                    chrono::Utc::now().format("%H:%M:%S UTC"), shutdown_instance);
-                let _ = shutdown_client.release_lease(pid).await;
-                std::process::exit(0);
+            #[cfg(unix)]
+            let sigterm = async {
+                use tokio::signal::unix::{signal, SignalKind};
+                if let Ok(mut s) = signal(SignalKind::terminate()) {
+                    s.recv().await;
+                }
+            };
+            #[cfg(not(unix))]
+            let sigterm = std::future::pending::<()>();
+
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm => {},
             }
+            eprintln!("\n[{}] @{} releasing lease + clearing presence and exiting…",
+                chrono::Utc::now().format("%H:%M:%S UTC"), shutdown_instance);
+            // Fire both in parallel so a slow server doesn't serialise the delays.
+            let _ = tokio::join!(
+                shutdown_client.release_lease(pid),
+                shutdown_client.delete_presence(),
+            );
+            std::process::exit(0);
         });
 
         let harness = worker::WorkerHarness::new(
@@ -655,7 +718,6 @@ async fn main() -> Result<()> {
             resolved_workdir,
             resolved_model,
             resolved_cli_template,
-            manifest_cli_template_light,
             auto_reply,
             batch_wait,
             hands_off_to,
@@ -715,60 +777,18 @@ async fn main() -> Result<()> {
     }
 
     if matches!(cli.command, Commands::Usage) {
-        let log_path = find_manifest()
-            .map(|p| p.parent().unwrap().join("usage.log"))
-            .unwrap_or_else(|_| std::path::PathBuf::from(".collab/usage.log"));
-
-        if !log_path.exists() {
-            println!("No usage data yet. Workers log to {} after each invocation.", log_path.display());
-            return Ok(());
-        }
-
-        let content = std::fs::read_to_string(&log_path)?;
-        // (input_tokens, output_tokens, duration_secs, call_count, cli_name, light_calls, full_calls, cost_usd)
-        let mut per_worker: std::collections::HashMap<String, (u64, u64, u64, u32, String, u32, u32, f64)> = std::collections::HashMap::new();
-        let mut total_input: u64 = 0;
-        let mut total_output: u64 = 0;
-        let mut total_duration: u64 = 0;
-        let mut total_calls: u32 = 0;
-        let mut total_light: u32 = 0;
-        let mut total_full: u32 = 0;
-        let mut total_cost: f64 = 0.0;
-        let mut any_cost = false;
-
-        for line in content.lines() {
-            if line.len() > 1024 || line.is_empty() { continue; }
-            let cols: Vec<&str> = line.split('\t').collect();
-            if cols.len() >= 5 {
-                let worker = cols[1];
-                if worker.len() > 64 || !worker.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
-                    continue;
-                }
-                let worker = worker.to_string();
-                let dur: u64 = cols[2].parse().unwrap_or(0);
-                let inp: u64 = cols[3].parse().unwrap_or(0);
-                let out: u64 = cols[4].parse().unwrap_or(0);
-                let model = if cols.len() >= 6 { cols[5].to_string() } else { "?".to_string() };
-                let tier = if cols.len() >= 7 { cols[6] } else { "full" };
-                let cost: f64 = if cols.len() >= 8 { cols[7].parse().unwrap_or(0.0) } else { 0.0 };
-                if cost > 0.0 { any_cost = true; }
-
-                total_input += inp;
-                total_output += out;
-                total_duration += dur;
-                total_calls += 1;
-                total_cost += cost;
-                if tier == "light" { total_light += 1; } else { total_full += 1; }
-
-                let entry = per_worker.entry(worker).or_insert((0, 0, 0, 0, model.clone(), 0, 0, 0.0));
-                entry.0 += inp;
-                entry.1 += out;
-                entry.2 += dur;
-                entry.3 += 1;
-                entry.4 = model;
-                if tier == "light" { entry.5 += 1; } else { entry.6 += 1; }
-                entry.7 += cost;
+        let client = CollabClient::new(&server, "", token.as_deref());
+        let usage = match client.fetch_usage().await {
+            Ok(u) => u,
+            Err(e) => {
+                eprintln!("Failed to fetch usage from {}: {}", server, e);
+                return Ok(());
             }
+        };
+
+        if usage.workers.is_empty() {
+            println!("No usage data yet. Workers report to the server after each invocation.");
+            return Ok(());
         }
 
         let fmt_time = |secs: u64| -> String {
@@ -779,42 +799,62 @@ async fn main() -> Result<()> {
             else { format!("   {:02}:{:02}", m, s) }
         };
 
+        let any_cost = usage.total_cost_usd > 0.0;
         let header = if any_cost { "Token usage (actual)\n" } else { "Token usage (estimated ~4 chars/token)\n" };
         println!("{}", header);
 
-        // Fetch todo counts per worker from server
-        let client = CollabClient::new(&server, "", token.as_deref());
+        // Todo counts per worker — same call pattern the old path used.
         let mut todo_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for worker_name in per_worker.keys() {
-            if let Ok(todos) = client.fetch_todos(worker_name).await {
-                todo_counts.insert(worker_name.clone(), todos.len());
+        for row in &usage.workers {
+            if let Ok(todos) = client.fetch_todos(&row.worker).await {
+                todo_counts.insert(row.worker.clone(), todos.len());
             }
         }
         let total_todos: usize = todo_counts.values().sum();
-
-        let mut workers: Vec<_> = per_worker.iter().collect();
-        workers.sort_by(|a, b| (b.1.0 + b.1.1).cmp(&(a.1.0 + a.1.1)));
 
         let cost_col = if any_cost { "  Cost" } else { "" };
         println!("{:<20} {:>8} {:>8} {:>6} {:>8}  {:<10} {:<10} {:<6}{}", "Worker", "Input", "Output", "Calls", "Time", "CLI", "Tiers", "Todos", cost_col);
         println!("{}", "─".repeat(if any_cost { 96 } else { 88 }));
 
-        for (name, (inp, out, dur, calls, model, light, full, cost)) in &workers {
-            let tier_str = format!("{}F/{}L", full, light);
-            let todo_str = match todo_counts.get(*name) {
+        for row in &usage.workers {
+            let tier_str = format!("{}F/{}L", row.full_calls, row.light_calls);
+            let todo_str = match todo_counts.get(&row.worker) {
                 Some(0) => "—".to_string(),
                 Some(n) => format!("{}", n),
                 None => "?".to_string(),
             };
-            let cost_str = if any_cost { format!("  ${:.4}", cost) } else { String::new() };
-            println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}", name, inp / 1000, out / 1000, calls, fmt_time(*dur), model, tier_str, todo_str, cost_str);
+            let cost_str = if any_cost { format!("  ${:.4}", row.cost_usd) } else { String::new() };
+            let cli_name = if row.cli.is_empty() { "?" } else { row.cli.as_str() };
+            println!(
+                "{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}",
+                row.worker,
+                row.input_tokens / 1000,
+                row.output_tokens / 1000,
+                row.calls,
+                fmt_time(row.duration_secs),
+                cli_name,
+                tier_str,
+                todo_str,
+                cost_str,
+            );
         }
 
         println!("{}", "─".repeat(if any_cost { 96 } else { 88 }));
-        let total_tier_str = format!("{}F/{}L", total_full, total_light);
+        let total_tier_str = format!("{}F/{}L", usage.total_full_calls, usage.total_light_calls);
         let total_todo_str = if total_todos > 0 { format!("{}", total_todos) } else { "—".to_string() };
-        let total_cost_str = if any_cost { format!("  ${:.4}", total_cost) } else { String::new() };
-        println!("{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}", "TOTAL", total_input / 1000, total_output / 1000, total_calls, fmt_time(total_duration), "", total_tier_str, total_todo_str, total_cost_str);
+        let total_cost_str = if any_cost { format!("  ${:.4}", usage.total_cost_usd) } else { String::new() };
+        println!(
+            "{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}",
+            "TOTAL",
+            usage.total_input_tokens / 1000,
+            usage.total_output_tokens / 1000,
+            usage.total_calls,
+            fmt_time(usage.total_duration_secs),
+            "",
+            total_tier_str,
+            total_todo_str,
+            total_cost_str,
+        );
 
         return Ok(());
     }
@@ -973,6 +1013,11 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
         _ => Vec::new(), // server unreachable — skip pre-flight, let the server-side lease catch it
     };
     let live_now = chrono::Utc::now();
+    // Workers heartbeat every 10s (see worker.rs HEARTBEAT_INTERVAL_SECS).
+    // 30s = 3 missed heartbeats → confidently dead, and tight enough that a
+    // Cmd+Q-then-relaunch cycle doesn't trip the guard on presence rows that
+    // ungracefully-killed workers left behind.
+    const LIVENESS_WINDOW_SECS: i64 = 30;
     let fresh_set: std::collections::HashSet<String> = live_roster
         .into_iter()
         .filter_map(|v| {
@@ -980,7 +1025,7 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
             let last = v.get("last_seen")?.as_str()?;
             let parsed = chrono::DateTime::parse_from_rfc3339(last).ok()?;
             let delta = (live_now - parsed.with_timezone(&chrono::Utc)).num_seconds();
-            if delta < 60 { Some(id) } else { None }
+            if delta < LIVENESS_WINDOW_SECS { Some(id) } else { None }
         })
         .collect();
 
@@ -1164,7 +1209,6 @@ fn load_lifecycle_manifest() -> Result<(Vec<lifecycle::WorkerManifestEntry>, std
             .iter()
             .map(|w| {
                 let cli_tmpl = cfg.resolved_cli_template(w);
-                let cli_tmpl_light = cfg.resolved_cli_template_light(w);
                 let model = cfg.resolved_model(w).unwrap_or_default();
                 lifecycle::WorkerManifestEntry {
                     name: w.name.clone(),
@@ -1177,7 +1221,6 @@ fn load_lifecycle_manifest() -> Result<(Vec<lifecycle::WorkerManifestEntry>, std
                     output_dir: w.codebase_path.clone(),
                     shared_data_dir: cfg.shared_data_dir.clone(),
                     cli_template: cli_tmpl,
-                    cli_template_light: cli_tmpl_light,
                     hands_off_to: w.hands_off_to.clone(),
                 }
             })
@@ -1554,7 +1597,6 @@ struct WorkerManifestLookup {
     hands_off_to: Vec<String>,
     teammates: Vec<(String, String)>,
     cli_template: Option<String>,
-    cli_template_light: Option<String>,
     codebase_path: Option<String>,
     model: Option<String>,
 }
@@ -1567,14 +1609,13 @@ struct WorkerManifestLookup {
 fn resolve_worker_manifest(
     workdir: &std::path::Path,
     instance_id: &str,
-) -> (Vec<String>, Vec<(String, String)>, Option<String>, Option<String>,
+) -> (Vec<String>, Vec<(String, String)>, Option<String>,
       Option<String>, Option<String>) {
     let lookup = resolve_worker_manifest_inner(workdir, instance_id);
     (
         lookup.hands_off_to,
         lookup.teammates,
         lookup.cli_template,
-        lookup.cli_template_light,
         lookup.codebase_path,
         lookup.model,
     )
@@ -1592,7 +1633,6 @@ fn resolve_worker_manifest_inner(
                 let me = cfg.workers.iter().find(|w| w.name == instance_id);
                 let hands_off = me.map(|w| w.hands_off_to.clone()).unwrap_or_default();
                 let tmpl = me.and_then(|w| cfg.resolved_cli_template(w));
-                let tmpl_light = me.and_then(|w| cfg.resolved_cli_template_light(w));
                 let codebase = me.map(|w| w.codebase_path.clone());
                 let model = me.and_then(|w| cfg.resolved_model(w));
                 let teammates: Vec<(String, String)> = cfg
@@ -1604,7 +1644,6 @@ fn resolve_worker_manifest_inner(
                     hands_off_to: hands_off,
                     teammates,
                     cli_template: tmpl,
-                    cli_template_light: tmpl_light,
                     codebase_path: codebase,
                     model,
                 };
@@ -1624,7 +1663,6 @@ fn resolve_worker_manifest_inner(
         hands_off_to: vec![],
         teammates: vec![],
         cli_template: None,
-        cli_template_light: None,
         codebase_path: None,
         model: None,
     };
@@ -1634,7 +1672,6 @@ fn resolve_worker_manifest_inner(
                 let entry = manifest.iter().find(|w| w.name == instance_id);
                 let hands_off = entry.map(|w| w.hands_off_to.clone()).unwrap_or_default();
                 let tmpl = entry.and_then(|w| w.cli_template.clone());
-                let tmpl_light = entry.and_then(|w| w.cli_template_light.clone());
                 let codebase = entry.map(|w| w.codebase_path.clone());
                 let model = entry.map(|w| w.model.clone()).filter(|s| !s.is_empty());
                 let team: Vec<(String, String)> = manifest
@@ -1645,7 +1682,6 @@ fn resolve_worker_manifest_inner(
                     hands_off_to: hands_off,
                     teammates: team,
                     cli_template: tmpl,
-                    cli_template_light: tmpl_light,
                     codebase_path: codebase,
                     model,
                 }
