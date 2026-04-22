@@ -83,33 +83,45 @@ const CLI_TEMPLATES = {
   // dashboard the backend no longer understands.
   if (cfg.setupComplete && cfg.token && cfg.teamName) {
     // Already set up — hide wizard, show dashboard, and restart the server.
-    // On a fresh app launch the server sidecar isn't running yet, so SSE
-    // would loop on "reconnecting…" forever without this.
     const wiz  = document.getElementById('wizard');
     const dash = document.getElementById('dashboard');
     wiz.hidden = true;
     dash.hidden = false;
     requestAnimationFrame(() => dash.classList.add('visible'));
     dashboardActive = true;
-    showDashboard();
+
     // Register the session FIRST so the Cmd+Q / close-window handler will
     // warn about still-running workers even if start_server below races
-    // or errors out. Without this, a quick quit after the app reopens
-    // (before the server sidecar has finished starting) leaves worker
-    // daemons running silently with no prompt — which burns tokens. Must
-    // be awaited, not fire-and-forget.
+    // or errors out.
     try { await invoke('mark_session_active', { projectDir: cfg.projectDir }); } catch {}
 
-    // Start server in background — connectSSE (called by showDashboard)
-    // will keep retrying until the server is ready. Admin token is
-    // generated fresh per session; the team token already lives in
-    // team_tokens on the server disk, so workers auth with cfg.token
-    // via their own envs, not via this startup parameter.
-    invoke('start_server', {
-      serverUrl:  cfg.serverUrl,
-      adminToken: generateHexToken(32),
-      projectDir: cfg.projectDir,
-    }).catch(e => toast('Server error: ' + e, true));
+    // Start server and wait for it to accept connections before verifying
+    // the token. Without this the token probe races against the bind and
+    // always loses, leaving the GUI stuck on "connecting…".
+    const adminToken = generateHexToken(32);
+    try {
+      await invoke('start_server', {
+        serverUrl:  cfg.serverUrl,
+        adminToken,
+        projectDir: cfg.projectDir,
+      });
+    } catch (e) { toast('Server error: ' + e, true); }
+
+    // Poll until the server is accepting HTTP, then verify the saved
+    // team token. If the DB was recreated (git clean, re-clone, etc.)
+    // the token won't exist and everything 401s — re-mint it.
+    await waitForServer(cfg.serverUrl, adminToken);
+    const tokenOk = await verifyToken(cfg.serverUrl, cfg.token);
+    if (!tokenOk) {
+      try {
+        cfg.token = await mintTeamTokenDuringLaunch(adminToken);
+        await invoke('save_config', { config: cfg });
+      } catch (e) {
+        toast('Could not re-mint team token: ' + (e.message || e), true);
+      }
+    }
+
+    showDashboard();
   } else {
     // Show wizard, pre-fill fields
     prefillWizard();
@@ -249,6 +261,37 @@ async function mintTeamTokenDuringLaunch(adminToken) {
   const data = await resp.json();
   if (!data.token) throw new Error('Server minted the team but returned no token.');
   return data.token;
+}
+
+// Wait for the server to respond to HTTP (any status). Used by the
+// auto-relaunch path so the token probe doesn't race against the bind.
+async function waitForServer(serverUrl, bearer, maxMs = 8000) {
+  const base = serverUrl.replace(/\/+$/, '');
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    try {
+      await fetch(base + '/', {
+        headers: { Authorization: `Bearer ${bearer}` },
+        signal: AbortSignal.timeout(1500),
+      });
+      return; // any response means the server is up
+    } catch (_) {
+      await sleep(250);
+    }
+  }
+}
+
+// Check whether a team token is still recognized by the server.
+async function verifyToken(serverUrl, token) {
+  try {
+    const res = await fetch(serverUrl.replace(/\/+$/, '') + '/roster', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(3000),
+    });
+    return res.status !== 401;
+  } catch (_) {
+    return true; // network error — don't invalidate the token over transient failures
+  }
 }
 
 // Step 2 validation
