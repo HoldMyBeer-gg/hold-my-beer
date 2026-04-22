@@ -26,6 +26,7 @@
 build
 collab-cli/doc/
 collab-gui/lighthouse-*.json
+collab-gui/public/*.map
 collab-gui/src-tauri/binaries/
 collab-gui/src-tauri/gen/
 collab-vscode/.vscode/*
