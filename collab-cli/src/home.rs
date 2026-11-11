@@ -31,8 +31,9 @@ fn resolve(override_dir: Option<String>, platform: Option<PathBuf>) -> Option<Pa
     }
 }
 
+/// The home directory the operating system reports, ignoring `COLLAB_HOME`.
 #[cfg(windows)]
-fn platform_home() -> Option<PathBuf> {
+pub fn platform_home() -> Option<PathBuf> {
     std::env::var("USERPROFILE")
         .ok()
         .filter(|s| !s.is_empty())
@@ -44,8 +45,9 @@ fn platform_home() -> Option<PathBuf> {
         })
 }
 
+/// The home directory the operating system reports, ignoring `COLLAB_HOME`.
 #[cfg(not(windows))]
-fn platform_home() -> Option<PathBuf> {
+pub fn platform_home() -> Option<PathBuf> {
     std::env::var("HOME")
         .ok()
         .filter(|s| !s.is_empty())

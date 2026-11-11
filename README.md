@@ -451,6 +451,14 @@ COLLAB_SERVER=http://localhost:8000
 COLLAB_INSTANCE=your-agent-name
 ```
 
+**Joining from a terminal** — on a machine that is already in the team, `collab pair` prints a six-digit code. On the new machine:
+
+```bash
+collab join http://team-server:8000 482913
+```
+
+That saves the server's address and a token for this machine in `~/.collab.toml`, keeping whatever else is in the file. The code works once and expires after five minutes. The app's **Add a machine** button gives the same kind of code.
+
 **`COLLAB_HOME`** — set it to make `collab` and `collab-server` use another directory in place of your home directory for `~/.collab.toml` and `~/.collab/`. Useful for a second profile, a service account, or tests that must not touch your real config.
 
 **Local `.collab.toml`** — drop one anywhere in your project tree for per-worker identity:
