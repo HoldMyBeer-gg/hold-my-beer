@@ -151,3 +151,4 @@ jobs:
           tests/a11y-labels.spec.mjs
           tests/launch-server-failures.spec.mjs
           tests/dashboard-catch-up.spec.mjs
+          tests/default-model.spec.mjs

@@ -95,7 +95,7 @@ impl Default for SavedConfig {
             join_only: false,
             cli_template: "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"
                 .into(),
-            model: "haiku".into(),
+            model: "opus".into(),
         }
     }
 }
