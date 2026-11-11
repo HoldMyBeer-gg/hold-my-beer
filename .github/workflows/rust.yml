@@ -152,3 +152,4 @@ jobs:
           tests/launch-server-failures.spec.mjs
           tests/dashboard-catch-up.spec.mjs
           tests/default-model.spec.mjs
+          tests/joined-local-workers.spec.mjs
