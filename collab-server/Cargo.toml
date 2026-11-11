@@ -19,7 +19,10 @@ axum = "0.7"
 tokio = { version = "1.40", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-native-tls", "sqlite", "macros"] }
+# SQLite is a local file, so sqlx needs no TLS backend. Asking for one
+# (the old "runtime-tokio-native-tls") made every build require the
+# system's OpenSSL headers.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
 sha1 = "0.10"
 sha2 = "0.10"
