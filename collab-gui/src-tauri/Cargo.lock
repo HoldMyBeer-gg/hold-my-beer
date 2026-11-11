@@ -1565,6 +1565,7 @@ name = "hold-my-beer-gui"
 version = "0.1.0"
 dependencies = [
  "dirs 5.0.1",
+ "libc",
  "rand 0.8.8",
  "rfd",
  "serde",
@@ -1573,6 +1574,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-shell",
  "tokio",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

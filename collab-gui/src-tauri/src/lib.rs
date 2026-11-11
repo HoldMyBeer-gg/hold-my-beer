@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod workers;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -147,45 +148,75 @@ fn handle_quit_attempt(app: &tauri::AppHandle, origin: &str) -> bool {
     eprintln!("[shutdown] quit attempt from {origin}");
     let state = app.state::<AppState>();
 
-    let has_session = match state.current_project_dir.try_lock() {
-        Ok(guard) => guard.is_some(),
+    // Ask only when `collab worker` processes are really alive, the same way
+    // `collab ps` decides. A project directory alone does not mean workers
+    // are running: there may be none, or they may have been stopped or
+    // killed and left stale entries in workers.pids.
+    let (has_session, running) = match state.current_project_dir.try_lock() {
+        Ok(guard) => match guard.as_ref() {
+            None => (false, workers::Running::None),
+            Some(dir) => {
+                let files = workers::pid_files(dir, dirs::home_dir().as_deref());
+                (true, workers::running_workers(&files, workers::pid_alive))
+            }
+        },
         // Lock contended → some other code path is touching the session right
-        // now, which means we definitely have an active session worth warning
-        // about. Default to "yes, prompt" rather than silently quitting.
-        Err(_) => true,
+        // now. We can't look, so ask rather than silently quitting.
+        Err(_) => (true, workers::Running::Unknown),
     };
+    eprintln!("[shutdown] workers: {running:?}");
+
     if !has_session {
         return true;
     }
+    if !running.should_prompt() {
+        // Nothing to ask about, but this machine may still be running the
+        // embedded server: shut the session down before exiting.
+        spawn_shutdown_then_exit(app);
+        return false;
+    }
 
-    let choice = rfd::MessageDialog::new()
+    // Attach the alert to the main window. Without a parent, rfd shows it
+    // through CFUserNotificationDisplayAlert, which belongs to macOS's
+    // UserNotificationCenter process rather than this app: if the app is
+    // killed while it is up, the alert stays on screen with nothing behind
+    // its buttons. As a sheet on our window it goes away with the app.
+    let mut dialog = rfd::MessageDialog::new()
         .set_level(rfd::MessageLevel::Warning)
         .set_title("Stop workers before quitting?")
         .set_description(
             "`collab worker` processes are still running and will keep \
              spending tokens until they're stopped.\n\n\
              Yes: stop all workers and quit.\n\
-             No: cancel and keep the GUI open."
+             No: cancel and keep the GUI open.",
         )
-        .set_buttons(rfd::MessageButtons::YesNo)
-        .show();
+        .set_buttons(rfd::MessageButtons::YesNo);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    } else {
+        eprintln!("[shutdown] main window not found; quit dialog is unparented");
+    }
+    let choice = dialog.show();
     eprintln!("[shutdown] dialog returned: {choice:?}");
 
     if matches!(choice, rfd::MessageDialogResult::Yes) {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            eprintln!("[shutdown] running shutdown_session");
-            commands::shutdown_session(&app).await;
-            eprintln!("[shutdown] shutdown_session done — calling app.exit");
-            app.exit(0);
-        });
-        // Tell the caller to block the immediate close; our async task will
-        // fire `app.exit(0)` once cleanup completes.
-        false
+        spawn_shutdown_then_exit(app);
     } else {
         eprintln!("[shutdown] user cancelled quit");
-        false
     }
+    // Block the immediate close either way; when cleaning up, the async task
+    // fires `app.exit(0)` once it is done.
+    false
+}
+
+fn spawn_shutdown_then_exit(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        eprintln!("[shutdown] running shutdown_session");
+        commands::shutdown_session(&app).await;
+        eprintln!("[shutdown] shutdown_session done — calling app.exit");
+        app.exit(0);
+    });
 }
 
 /// Install our own `applicationShouldTerminate:` method on tao's existing
