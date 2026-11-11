@@ -3,20 +3,23 @@ pub mod home;
 pub mod pairing;
 
 use axum::{
+    Json, Router,
     extract::{Extension, Path, Request, State},
     http::{self, StatusCode},
     middleware::Next,
-    response::{sse::{Event, KeepAlive, Sse}, IntoResponse, Response},
+    response::{
+        IntoResponse, Response,
+        sse::{Event, KeepAlive, Sse},
+    },
     routing::{delete, get, patch, post, put},
-    Json, Router,
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use sha1::Sha1;
 use sha2::{Digest as Sha2Digest, Sha256};
-use sqlx::{sqlite::SqlitePool, Row};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use sqlx::{Row, sqlite::SqlitePool};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration as StdDuration, Instant};
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
@@ -36,7 +39,9 @@ impl AuthContext {
         Self { team_id: None }
     }
     pub fn for_team(team_id: impl Into<String>) -> Self {
-        Self { team_id: Some(team_id.into()) }
+        Self {
+            team_id: Some(team_id.into()),
+        }
     }
 }
 
@@ -61,7 +66,9 @@ const MAX_REF_LEN: usize = 64;
 const MAX_TODO_DESC_LEN: usize = 2048;
 
 fn is_valid_identifier(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// "all" is a reserved broadcast channel — any worker can send to it and everyone receives it.
@@ -258,7 +265,11 @@ fn extract_token(request: &Request) -> Option<String> {
         q.split('&').find_map(|kv| {
             let (k, v) = kv.split_once('=')?;
             if k == "token" {
-                Some(v.replace("%3D", "=").replace("%2B", "+").replace("%2F", "/"))
+                Some(
+                    v.replace("%3D", "=")
+                        .replace("%2B", "+")
+                        .replace("%2F", "/"),
+                )
             } else {
                 None
             }
@@ -271,10 +282,11 @@ fn extract_token(request: &Request) -> Option<String> {
 /// plaintext; we hash here so the DB never sees the raw secret on the wire.
 async fn lookup_team_by_token(db: &SqlitePool, token: &str) -> Result<Option<String>, sqlx::Error> {
     let hash = hash_token(token);
-    let row = sqlx::query("SELECT team_id FROM team_tokens WHERE token_hash = ? AND revoked_at IS NULL")
-        .bind(&hash)
-        .fetch_optional(db)
-        .await?;
+    let row =
+        sqlx::query("SELECT team_id FROM team_tokens WHERE token_hash = ? AND revoked_at IS NULL")
+            .bind(&hash)
+            .fetch_optional(db)
+            .await?;
     Ok(row.map(|r| r.get::<String, _>("team_id")))
 }
 
@@ -300,7 +312,9 @@ async fn auth_middleware(
     if let Some(ref tok) = provided {
         match lookup_team_by_token(&state.db, tok).await {
             Ok(Some(team_id)) => {
-                request.extensions_mut().insert(AuthContext::for_team(team_id));
+                request
+                    .extensions_mut()
+                    .insert(AuthContext::for_team(team_id));
                 return next.run(request).await;
             }
             Ok(None) => {} // fall through to legacy path
@@ -360,10 +374,16 @@ pub fn create_app(state: AppState) -> Router {
         .route("/admin/teams", get(list_teams))
         .route("/admin/teams", post(create_team))
         .route("/admin/teams/:team_id/tokens", post(mint_team_token))
-        .route("/admin/teams/:team_id/tokens/:token_prefix", delete(revoke_team_token))
+        .route(
+            "/admin/teams/:team_id/tokens/:token_prefix",
+            delete(revoke_team_token),
+        )
         .route("/pair/codes", post(create_pairing_code))
         .route("/team", get(current_team))
-        .layer(TimeoutLayer::with_status_code(http::StatusCode::REQUEST_TIMEOUT, StdDuration::from_secs(30)));
+        .layer(TimeoutLayer::with_status_code(
+            http::StatusCode::REQUEST_TIMEOUT,
+            StdDuration::from_secs(30),
+        ));
 
     // SSE routes — no timeout, connections stay open indefinitely
     let sse = Router::new()
@@ -376,7 +396,10 @@ pub fn create_app(state: AppState) -> Router {
     // gated by the code itself; see `pairing`.
     let open = Router::new()
         .route("/pair/redeem", post(redeem_pairing_code))
-        .layer(TimeoutLayer::with_status_code(http::StatusCode::REQUEST_TIMEOUT, StdDuration::from_secs(30)));
+        .layer(TimeoutLayer::with_status_code(
+            http::StatusCode::REQUEST_TIMEOUT,
+            StdDuration::from_secs(30),
+        ));
 
     Router::new()
         .merge(timed)
@@ -494,7 +517,10 @@ async fn get_history(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let limit: Option<i64> = params.get("limit").and_then(|v| v.parse().ok()).filter(|&n| n > 0);
+    let limit: Option<i64> = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0);
     let team = auth.team_id.as_deref();
 
     let rows = if state.audit {
@@ -703,7 +729,10 @@ async fn update_presence(
 ) -> Result<StatusCode, StatusCode> {
     let role = payload.role.unwrap_or_default();
 
-    if instance_id.len() > MAX_INSTANCE_ID_LEN || !is_valid_identifier(&instance_id) || role.len() > MAX_ROLE_LEN {
+    if instance_id.len() > MAX_INSTANCE_ID_LEN
+        || !is_valid_identifier(&instance_id)
+        || role.len() > MAX_ROLE_LEN
+    {
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -734,9 +763,13 @@ async fn update_presence(
                  last_seen = ?
                WHERE instance_id = ? AND COALESCE(team_id, '') = COALESCE(?, '')"#,
         )
-        .bind(&role).bind(&role).bind(&now)
-        .bind(&instance_id).bind(auth.team_id.as_deref())
-        .execute(&state.db).await
+        .bind(&role)
+        .bind(&role)
+        .bind(&now)
+        .bind(&instance_id)
+        .bind(auth.team_id.as_deref())
+        .execute(&state.db)
+        .await
         .map_err(|e| {
             tracing::error!("Database error: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
@@ -746,8 +779,12 @@ async fn update_presence(
             r#"INSERT INTO presence (instance_id, role, last_seen, team_id)
                VALUES (?, ?, ?, ?)"#,
         )
-        .bind(&instance_id).bind(&role).bind(&now).bind(auth.team_id.as_deref())
-        .execute(&state.db).await
+        .bind(&instance_id)
+        .bind(&role)
+        .bind(&now)
+        .bind(auth.team_id.as_deref())
+        .execute(&state.db)
+        .await
         .map_err(|e| {
             tracing::error!("Database error: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
@@ -888,8 +925,8 @@ async fn acquire_lease(
         let hb = DateTime::parse_from_rfc3339(&hb_str)
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or(now);
-        let stale = hb_str.as_str() < ttl_cutoff.as_str()
-            || (now - hb).num_seconds() > LEASE_TTL_SECS;
+        let stale =
+            hb_str.as_str() < ttl_cutoff.as_str() || (now - hb).num_seconds() > LEASE_TTL_SECS;
 
         if !stale {
             // Fresh lease, different pid → conflict.
@@ -1065,7 +1102,8 @@ pub struct MintTokenResponse {
 fn is_valid_team_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Generate a team token. 32 random bytes → url-safe base64-ish. Callers
@@ -1177,7 +1215,8 @@ async fn create_team(
         team_id,
         name: payload.name,
         token,
-    }).into_response())
+    })
+    .into_response())
 }
 
 async fn mint_team_token(
@@ -1215,7 +1254,11 @@ async fn mint_team_token(
         })?;
 
     let token_prefix = token.chars().take(12).collect::<String>();
-    Ok(Json(MintTokenResponse { token, token_prefix }).into_response())
+    Ok(Json(MintTokenResponse {
+        token,
+        token_prefix,
+    })
+    .into_response())
 }
 
 // ── Pairing: add a machine with a short code ──────────────────────────────────
@@ -1273,7 +1316,9 @@ async fn current_team(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
     match name {
-        Some(name) => Ok(Json(serde_json::json!({ "team_id": team_id, "name": name })).into_response()),
+        Some(name) => {
+            Ok(Json(serde_json::json!({ "team_id": team_id, "name": name })).into_response())
+        }
         None => Err(no_team()),
     }
 }
@@ -1509,49 +1554,16 @@ async fn stream_events(
     Extension(auth): Extension<AuthContext>,
     Path(instance_id): Path<String>,
     State(state): State<Arc<AppState>>,
-) -> Result<Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>, StatusCode> {
-    use tokio_stream::wrappers::BroadcastStream;
+) -> Result<
+    Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>>,
+    StatusCode,
+> {
     use tokio_stream::StreamExt as _;
+    use tokio_stream::wrappers::BroadcastStream;
 
     if instance_id.len() > MAX_INSTANCE_ID_LEN || !is_valid_identifier(&instance_id) {
         return Err(StatusCode::BAD_REQUEST);
     }
-
-    state.sse_subscribers.fetch_add(1, Ordering::Relaxed);
-    let guard = SseGuard(Arc::clone(&state.sse_subscribers));
-    let subscriber_team = auth.team_id.clone();
-
-    let rx = state.tx.subscribe();
-    let stream = BroadcastStream::new(rx)
-        .filter_map(move |result| {
-            let _guard = &guard;
-            match result {
-                Ok(bmsg) => {
-                    if bmsg.team_id != subscriber_team {
-                        return None;
-                    }
-                    if bmsg.message.recipient == instance_id || bmsg.message.recipient == "all" {
-                        let event = Event::default()
-                            .json_data(&bmsg.message)
-                            .unwrap_or_else(|_| Event::default());
-                        Some(Ok(event))
-                    } else {
-                        None
-                    }
-                }
-                Err(_) => None, // lagged or closed — skip, client will reconnect
-            }
-        });
-
-    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
-}
-
-async fn stream_all_events(
-    Extension(auth): Extension<AuthContext>,
-    State(state): State<Arc<AppState>>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
-    use tokio_stream::wrappers::BroadcastStream;
-    use tokio_stream::StreamExt as _;
 
     state.sse_subscribers.fetch_add(1, Ordering::Relaxed);
     let guard = SseGuard(Arc::clone(&state.sse_subscribers));
@@ -1565,7 +1577,44 @@ async fn stream_all_events(
                 if bmsg.team_id != subscriber_team {
                     return None;
                 }
-                Some(Ok(Event::default().json_data(&bmsg.message).unwrap_or_else(|_| Event::default())))
+                if bmsg.message.recipient == instance_id || bmsg.message.recipient == "all" {
+                    let event = Event::default()
+                        .json_data(&bmsg.message)
+                        .unwrap_or_else(|_| Event::default());
+                    Some(Ok(event))
+                } else {
+                    None
+                }
+            }
+            Err(_) => None, // lagged or closed — skip, client will reconnect
+        }
+    });
+
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
+}
+
+async fn stream_all_events(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    use tokio_stream::StreamExt as _;
+    use tokio_stream::wrappers::BroadcastStream;
+
+    state.sse_subscribers.fetch_add(1, Ordering::Relaxed);
+    let guard = SseGuard(Arc::clone(&state.sse_subscribers));
+    let subscriber_team = auth.team_id.clone();
+
+    let rx = state.tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+        let _guard = &guard;
+        match result {
+            Ok(bmsg) => {
+                if bmsg.team_id != subscriber_team {
+                    return None;
+                }
+                Some(Ok(Event::default()
+                    .json_data(&bmsg.message)
+                    .unwrap_or_else(|_| Event::default())))
             }
             Err(_) => None,
         }
@@ -1582,7 +1631,7 @@ async fn get_metrics(
     let team = auth.team_id.as_deref();
 
     let messages_total: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM messages WHERE COALESCE(team_id, '') = COALESCE(?, '')"
+        "SELECT COUNT(*) FROM messages WHERE COALESCE(team_id, '') = COALESCE(?, '')",
     )
     .bind(team)
     .fetch_one(&state.db)
@@ -2131,7 +2180,8 @@ fn parse_todo_rows(rows: Vec<sqlx::sqlite::SqliteRow>) -> Vec<Todo> {
             let created_str: String = row.get("created_at");
             let created_at = parse_flexible_utc(&created_str)?;
 
-            let completed_at = row.try_get::<Option<String>, _>("completed_at")
+            let completed_at = row
+                .try_get::<Option<String>, _>("completed_at")
                 .ok()
                 .flatten()
                 .and_then(|s| parse_flexible_utc(&s));
@@ -2164,7 +2214,8 @@ fn parse_message_rows(rows: Vec<sqlx::sqlite::SqliteRow>) -> Vec<Message> {
                 .ok()?
                 .with_timezone(&Utc);
 
-            let read_at = row.try_get::<Option<String>, _>("read_at")
+            let read_at = row
+                .try_get::<Option<String>, _>("read_at")
                 .ok()
                 .flatten()
                 .and_then(|s| DateTime::parse_from_rfc3339(&s).ok())
@@ -2210,12 +2261,20 @@ mod lease_tests {
         let db = db::init_test_db().await.unwrap();
         let now = Utc::now().to_rfc3339();
         sqlx::query("INSERT INTO teams (id, name, created_at) VALUES (?, ?, ?)")
-            .bind(team_id).bind(team_id).bind(&now)
-            .execute(&db).await.unwrap();
+            .bind(team_id)
+            .bind(team_id)
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         let hash = hash_token(token);
         sqlx::query("INSERT INTO team_tokens (token_hash, team_id, created_at) VALUES (?, ?, ?)")
-            .bind(&hash).bind(team_id).bind(&now)
-            .execute(&db).await.unwrap();
+            .bind(&hash)
+            .bind(team_id)
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         let (tx, _) = broadcast::channel(256);
         let state = AppState {
             db,
@@ -2264,13 +2323,22 @@ mod lease_tests {
 
     async fn body_bytes(resp: Response) -> Vec<u8> {
         use http_body_util::BodyExt;
-        resp.into_body().collect().await.unwrap().to_bytes().to_vec()
+        resp.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec()
     }
 
     #[tokio::test]
     async fn lease_acquires_on_first_call_in_legacy_mode() {
         let app = app_with_legacy_token(None).await;
-        let resp = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let state: LeaseState = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(state.team_id, None);
@@ -2282,8 +2350,16 @@ mod lease_tests {
     #[tokio::test]
     async fn lease_same_pid_is_heartbeat() {
         let app = app_with_legacy_token(None).await;
-        let _ = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
-        let resp = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let state: LeaseState = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(state.pid, 100);
@@ -2293,8 +2369,16 @@ mod lease_tests {
     #[tokio::test]
     async fn lease_different_pid_fresh_is_conflict() {
         let app = app_with_legacy_token(None).await;
-        let _ = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
-        let resp = app.clone().oneshot(lease_req(&app, None, "webdev", 200)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 200))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::CONFLICT);
         let conflict: LeaseConflict = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(conflict.pid, 100);
@@ -2312,13 +2396,20 @@ mod lease_tests {
             .execute(&db).await.unwrap();
         let (tx, _) = broadcast::channel(256);
         let state = AppState {
-            db, token: None, audit: false, tx,
+            db,
+            token: None,
+            audit: false,
+            tx,
             sse_subscribers: Arc::new(AtomicUsize::new(0)),
             started_at: Instant::now(),
             pairing: Default::default(),
         };
         let app = create_app(state);
-        let resp = app.clone().oneshot(lease_req(&app, None, "webdev", 200)).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 200))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let state: LeaseState = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(state.pid, 200);
@@ -2328,22 +2419,46 @@ mod lease_tests {
     #[tokio::test]
     async fn lease_release_is_idempotent() {
         let app = app_with_legacy_token(None).await;
-        let _ = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
-        let resp = app.clone().oneshot(release_req(None, "webdev", 100)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(release_req(None, "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::NO_CONTENT);
         // Releasing again — no-op but still 204.
-        let resp2 = app.clone().oneshot(release_req(None, "webdev", 100)).await.unwrap();
+        let resp2 = app
+            .clone()
+            .oneshot(release_req(None, "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp2.status(), StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn lease_release_with_wrong_pid_does_not_evict() {
         let app = app_with_legacy_token(None).await;
-        let _ = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
         // Wrong pid tries to release — silently ignored.
-        let _ = app.clone().oneshot(release_req(None, "webdev", 999)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(release_req(None, "webdev", 999))
+            .await
+            .unwrap();
         // Legitimate holder can still heartbeat.
-        let resp = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
@@ -2354,9 +2469,17 @@ mod lease_tests {
 
         // Same instance name in different teams is fine — they're different
         // namespaces, each gets its own lease.
-        let resp_a = app_a.clone().oneshot(lease_req(&app_a, Some("tok-a"), "webdev", 100)).await.unwrap();
+        let resp_a = app_a
+            .clone()
+            .oneshot(lease_req(&app_a, Some("tok-a"), "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp_a.status(), StatusCode::OK);
-        let resp_b = app_b.clone().oneshot(lease_req(&app_b, Some("tok-b"), "webdev", 200)).await.unwrap();
+        let resp_b = app_b
+            .clone()
+            .oneshot(lease_req(&app_b, Some("tok-b"), "webdev", 200))
+            .await
+            .unwrap();
         assert_eq!(resp_b.status(), StatusCode::OK);
 
         let state_a: LeaseState = serde_json::from_slice(&body_bytes(resp_a).await).unwrap();
@@ -2368,7 +2491,11 @@ mod lease_tests {
     #[tokio::test]
     async fn team_token_resolves_to_team_context() {
         let app = app_with_team("team-a", "tok-a").await;
-        let resp = app.clone().oneshot(lease_req(&app, Some("tok-a"), "webdev", 100)).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, Some("tok-a"), "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let state: LeaseState = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(state.team_id.as_deref(), Some("team-a"));
@@ -2379,7 +2506,11 @@ mod lease_tests {
         // Server has no env token and token "garbage" isn't in team_tokens →
         // legacy fallback (team_id = None).
         let app = app_with_legacy_token(None).await;
-        let resp = app.clone().oneshot(lease_req(&app, Some("garbage"), "webdev", 100)).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, Some("garbage"), "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let state: LeaseState = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(state.team_id, None);
@@ -2389,19 +2520,36 @@ mod lease_tests {
     async fn legacy_env_token_required_when_configured_and_no_team_match() {
         let app = app_with_legacy_token(Some("envtoken")).await;
         // No token at all → 401.
-        let resp = app.clone().oneshot(lease_req(&app, None, "webdev", 100)).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(lease_req(&app, None, "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         // Wrong token → 401.
-        let resp2 = app.clone().oneshot(lease_req(&app, Some("wrong"), "webdev", 100)).await.unwrap();
+        let resp2 = app
+            .clone()
+            .oneshot(lease_req(&app, Some("wrong"), "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp2.status(), StatusCode::UNAUTHORIZED);
         // Correct token → legacy context.
-        let resp3 = app.clone().oneshot(lease_req(&app, Some("envtoken"), "webdev", 100)).await.unwrap();
+        let resp3 = app
+            .clone()
+            .oneshot(lease_req(&app, Some("envtoken"), "webdev", 100))
+            .await
+            .unwrap();
         assert_eq!(resp3.status(), StatusCode::OK);
     }
 
     // ── Cross-team isolation ──────────────────────────────────────────────
 
-    fn msg_req(token: Option<&str>, sender: &str, recipient: &str, content: &str) -> HttpRequest<Body> {
+    fn msg_req(
+        token: Option<&str>,
+        sender: &str,
+        recipient: &str,
+        content: &str,
+    ) -> HttpRequest<Body> {
         let body = serde_json::json!({
             "sender": sender,
             "recipient": recipient,
@@ -2436,16 +2584,39 @@ mod lease_tests {
         let tok_a = "tok-a".to_string();
         let tok_b = "tok-b".to_string();
         sqlx::query("INSERT INTO teams (id, name, created_at) VALUES (?, ?, ?)")
-            .bind("team-a").bind("team-a").bind(&now).execute(&db).await.unwrap();
+            .bind("team-a")
+            .bind("team-a")
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO teams (id, name, created_at) VALUES (?, ?, ?)")
-            .bind("team-b").bind("team-b").bind(&now).execute(&db).await.unwrap();
+            .bind("team-b")
+            .bind("team-b")
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO team_tokens (token_hash, team_id, created_at) VALUES (?, ?, ?)")
-            .bind(hash_token(&tok_a)).bind("team-a").bind(&now).execute(&db).await.unwrap();
+            .bind(hash_token(&tok_a))
+            .bind("team-a")
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO team_tokens (token_hash, team_id, created_at) VALUES (?, ?, ?)")
-            .bind(hash_token(&tok_b)).bind("team-b").bind(&now).execute(&db).await.unwrap();
+            .bind(hash_token(&tok_b))
+            .bind("team-b")
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         let (tx, _) = broadcast::channel(256);
         let state = AppState {
-            db, token: None, audit: false, tx,
+            db,
+            token: None,
+            audit: false,
+            tx,
             sse_subscribers: Arc::new(AtomicUsize::new(0)),
             started_at: Instant::now(),
             pairing: Default::default(),
@@ -2458,22 +2629,38 @@ mod lease_tests {
         let (app, tok_a, tok_b) = app_with_two_teams().await;
 
         // Team A sends to "webdev".
-        let post_a = app.clone().oneshot(msg_req(Some(&tok_a), "pm", "webdev", "team-a secret")).await.unwrap();
+        let post_a = app
+            .clone()
+            .oneshot(msg_req(Some(&tok_a), "pm", "webdev", "team-a secret"))
+            .await
+            .unwrap();
         assert_eq!(post_a.status(), StatusCode::OK);
 
         // Team B has its own "webdev" worker, unrelated. Also sends a message.
-        let post_b = app.clone().oneshot(msg_req(Some(&tok_b), "pm", "webdev", "team-b hello")).await.unwrap();
+        let post_b = app
+            .clone()
+            .oneshot(msg_req(Some(&tok_b), "pm", "webdev", "team-b hello"))
+            .await
+            .unwrap();
         assert_eq!(post_b.status(), StatusCode::OK);
 
         // Team A's webdev listing: only the team-a message.
-        let list_a = app.clone().oneshot(list_req(Some(&tok_a), "webdev")).await.unwrap();
+        let list_a = app
+            .clone()
+            .oneshot(list_req(Some(&tok_a), "webdev"))
+            .await
+            .unwrap();
         assert_eq!(list_a.status(), StatusCode::OK);
         let msgs_a: Vec<Message> = serde_json::from_slice(&body_bytes(list_a).await).unwrap();
         assert_eq!(msgs_a.len(), 1);
         assert_eq!(msgs_a[0].content, "team-a secret");
 
         // Team B's webdev listing: only the team-b message.
-        let list_b = app.clone().oneshot(list_req(Some(&tok_b), "webdev")).await.unwrap();
+        let list_b = app
+            .clone()
+            .oneshot(list_req(Some(&tok_b), "webdev"))
+            .await
+            .unwrap();
         assert_eq!(list_b.status(), StatusCode::OK);
         let msgs_b: Vec<Message> = serde_json::from_slice(&body_bytes(list_b).await).unwrap();
         assert_eq!(msgs_b.len(), 1);
@@ -2489,20 +2676,52 @@ mod lease_tests {
     async fn list_messages_does_not_replay_across_fetches() {
         let (app, tok_a, _tok_b) = app_with_two_teams().await;
 
-        let _ = app.clone().oneshot(msg_req(Some(&tok_a), "pm", "webdev", "task 1")).await.unwrap();
-        let _ = app.clone().oneshot(msg_req(Some(&tok_a), "pm", "webdev", "task 2")).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(msg_req(Some(&tok_a), "pm", "webdev", "task 1"))
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(msg_req(Some(&tok_a), "pm", "webdev", "task 2"))
+            .await
+            .unwrap();
 
-        let list1 = app.clone().oneshot(list_req(Some(&tok_a), "webdev")).await.unwrap();
+        let list1 = app
+            .clone()
+            .oneshot(list_req(Some(&tok_a), "webdev"))
+            .await
+            .unwrap();
         let msgs1: Vec<Message> = serde_json::from_slice(&body_bytes(list1).await).unwrap();
-        assert_eq!(msgs1.len(), 2, "first fetch should return both unread messages");
+        assert_eq!(
+            msgs1.len(),
+            2,
+            "first fetch should return both unread messages"
+        );
 
-        let list2 = app.clone().oneshot(list_req(Some(&tok_a), "webdev")).await.unwrap();
+        let list2 = app
+            .clone()
+            .oneshot(list_req(Some(&tok_a), "webdev"))
+            .await
+            .unwrap();
         let msgs2: Vec<Message> = serde_json::from_slice(&body_bytes(list2).await).unwrap();
-        assert_eq!(msgs2.len(), 0, "second fetch must be empty — read_at is stamped");
+        assert_eq!(
+            msgs2.len(),
+            0,
+            "second fetch must be empty — read_at is stamped"
+        );
 
         // New message after the replay window still gets through.
-        let _ = app.clone().oneshot(msg_req(Some(&tok_a), "pm", "webdev", "task 3")).await.unwrap();
-        let list3 = app.clone().oneshot(list_req(Some(&tok_a), "webdev")).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(msg_req(Some(&tok_a), "pm", "webdev", "task 3"))
+            .await
+            .unwrap();
+        let list3 = app
+            .clone()
+            .oneshot(list_req(Some(&tok_a), "webdev"))
+            .await
+            .unwrap();
         let msgs3: Vec<Message> = serde_json::from_slice(&body_bytes(list3).await).unwrap();
         assert_eq!(msgs3.len(), 1);
         assert_eq!(msgs3[0].content, "task 3");
@@ -2513,7 +2732,11 @@ mod lease_tests {
         let (app, tok_a, _tok_b) = app_with_two_teams().await;
 
         // Team A sends a message.
-        let _ = app.clone().oneshot(msg_req(Some(&tok_a), "pm", "webdev", "team-a")).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(msg_req(Some(&tok_a), "pm", "webdev", "team-a"))
+            .await
+            .unwrap();
 
         // A legacy client (no token) queries the same instance — gets nothing,
         // because legacy namespace is team_id=NULL, disjoint from team-a.
@@ -2540,14 +2763,22 @@ mod lease_tests {
     #[tokio::test]
     async fn admin_create_team_mints_token_and_persists() {
         let app = app_with_legacy_token(Some("admin-secret")).await;
-        let resp = app.clone().oneshot(create_team_req(Some("admin-secret"), "blender")).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(create_team_req(Some("admin-secret"), "blender"))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let created: CreateTeamResponse = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(created.name, "blender");
         assert!(created.token.starts_with("tm_"));
 
         // The newly-minted token should authenticate as the new team.
-        let lease = app.clone().oneshot(lease_req(&app, Some(&created.token), "rigger", 100)).await.unwrap();
+        let lease = app
+            .clone()
+            .oneshot(lease_req(&app, Some(&created.token), "rigger", 100))
+            .await
+            .unwrap();
         assert_eq!(lease.status(), StatusCode::OK);
         let state: LeaseState = serde_json::from_slice(&body_bytes(lease).await).unwrap();
         assert_eq!(state.team_id.as_deref(), Some(created.team_id.as_str()));
@@ -2556,7 +2787,11 @@ mod lease_tests {
     #[tokio::test]
     async fn admin_endpoints_reject_team_tokens() {
         let app = app_with_team("team-a", "tok-a").await;
-        let resp = app.clone().oneshot(create_team_req(Some("tok-a"), "other")).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(create_team_req(Some("tok-a"), "other"))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     }
 
@@ -2564,22 +2799,42 @@ mod lease_tests {
     async fn admin_endpoints_reject_wrong_legacy_token() {
         let app = app_with_legacy_token(Some("admin-secret")).await;
         // Wrong token → 401 at the middleware.
-        let resp = app.clone().oneshot(create_team_req(Some("wrong"), "x")).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(create_team_req(Some("wrong"), "x"))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn admin_create_team_rejects_duplicate_names() {
         let app = app_with_legacy_token(Some("a")).await;
-        let r1 = app.clone().oneshot(create_team_req(Some("a"), "dup")).await.unwrap();
+        let r1 = app
+            .clone()
+            .oneshot(create_team_req(Some("a"), "dup"))
+            .await
+            .unwrap();
         assert_eq!(r1.status(), StatusCode::OK);
-        let r2 = app.clone().oneshot(create_team_req(Some("a"), "dup")).await.unwrap();
+        let r2 = app
+            .clone()
+            .oneshot(create_team_req(Some("a"), "dup"))
+            .await
+            .unwrap();
         assert_eq!(r2.status(), StatusCode::CONFLICT);
     }
 
     // ── Usage endpoints ───────────────────────────────────────────────────
 
-    fn usage_post_req(token: Option<&str>, worker: &str, input: u64, output: u64, tier: &str, cost: Option<f64>, cli: Option<&str>) -> HttpRequest<Body> {
+    fn usage_post_req(
+        token: Option<&str>,
+        worker: &str,
+        input: u64,
+        output: u64,
+        tier: &str,
+        cost: Option<f64>,
+        cli: Option<&str>,
+    ) -> HttpRequest<Body> {
         let mut body = serde_json::json!({
             "worker": worker,
             "duration_secs": 1,
@@ -2587,8 +2842,12 @@ mod lease_tests {
             "output_tokens": output,
             "tier": tier,
         });
-        if let Some(c) = cost { body["cost_usd"] = serde_json::json!(c); }
-        if let Some(c) = cli { body["cli"] = serde_json::json!(c); }
+        if let Some(c) = cost {
+            body["cost_usd"] = serde_json::json!(c);
+        }
+        if let Some(c) = cli {
+            body["cli"] = serde_json::json!(c);
+        }
         let mut builder = HttpRequest::builder()
             .method("POST")
             .uri("/usage")
@@ -2612,14 +2871,54 @@ mod lease_tests {
         let app = app_with_team("team-a", "tok-a").await;
 
         // Two calls for "builder" — full + light — plus one call for "reviewer".
-        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "builder", 100, 50, "full", Some(0.02), Some("claude"))).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(usage_post_req(
+                Some("tok-a"),
+                "builder",
+                100,
+                50,
+                "full",
+                Some(0.02),
+                Some("claude"),
+            ))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::NO_CONTENT);
-        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "builder", 200, 80, "light", Some(0.01), Some("claude"))).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(usage_post_req(
+                Some("tok-a"),
+                "builder",
+                200,
+                80,
+                "light",
+                Some(0.01),
+                Some("claude"),
+            ))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::NO_CONTENT);
-        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "reviewer", 40, 20, "full", None, Some("ollama"))).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(usage_post_req(
+                Some("tok-a"),
+                "reviewer",
+                40,
+                20,
+                "full",
+                None,
+                Some("ollama"),
+            ))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::NO_CONTENT);
 
-        let resp = app.clone().oneshot(usage_get_req(Some("tok-a"))).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(usage_get_req(Some("tok-a")))
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let usage: UsageResponse = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(usage.workers.len(), 2);
@@ -2642,9 +2941,25 @@ mod lease_tests {
         // Seed a second team on the same DB via admin (legacy token off — fake another team by direct insert).
         // Simpler: spin up a fresh app for team-b and make sure team-a sees nothing of team-b's deltas.
         let app_b = app_with_team("team-b", "tok-b").await;
-        let _ = app_b.clone().oneshot(usage_post_req(Some("tok-b"), "builder", 999, 999, "full", None, None)).await.unwrap();
+        let _ = app_b
+            .clone()
+            .oneshot(usage_post_req(
+                Some("tok-b"),
+                "builder",
+                999,
+                999,
+                "full",
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
 
-        let resp = app.clone().oneshot(usage_get_req(Some("tok-a"))).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(usage_get_req(Some("tok-a")))
+            .await
+            .unwrap();
         let usage: UsageResponse = serde_json::from_slice(&body_bytes(resp).await).unwrap();
         assert_eq!(usage.workers.len(), 0);
         assert_eq!(usage.total_input_tokens, 0);
@@ -2653,14 +2968,38 @@ mod lease_tests {
     #[tokio::test]
     async fn usage_rejects_invalid_worker_name() {
         let app = app_with_team("team-a", "tok-a").await;
-        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "bad name!", 1, 1, "full", None, None)).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(usage_post_req(
+                Some("tok-a"),
+                "bad name!",
+                1,
+                1,
+                "full",
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn usage_rejects_unknown_tier() {
         let app = app_with_team("team-a", "tok-a").await;
-        let r = app.clone().oneshot(usage_post_req(Some("tok-a"), "builder", 1, 1, "heavy", None, None)).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(usage_post_req(
+                Some("tok-a"),
+                "builder",
+                1,
+                1,
+                "heavy",
+                None,
+                None,
+            ))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
     }
 
@@ -2670,7 +3009,12 @@ mod lease_tests {
     // Exact-description dedup folds those retries into one row so the
     // assignee doesn't get two tickets to close for the same work.
 
-    fn todo_create_req(token: Option<&str>, instance: &str, assigned_by: &str, desc: &str) -> HttpRequest<Body> {
+    fn todo_create_req(
+        token: Option<&str>,
+        instance: &str,
+        assigned_by: &str,
+        desc: &str,
+    ) -> HttpRequest<Body> {
         let body = serde_json::json!({
             "instance": instance,
             "assigned_by": assigned_by,
@@ -2686,7 +3030,11 @@ mod lease_tests {
         builder.body(Body::from(body.to_string())).unwrap()
     }
 
-    fn todo_list_req(token: Option<&str>, instance: &str, include_completed: Option<usize>) -> HttpRequest<Body> {
+    fn todo_list_req(
+        token: Option<&str>,
+        instance: &str,
+        include_completed: Option<usize>,
+    ) -> HttpRequest<Body> {
         let path = match include_completed {
             Some(n) => format!("/todos/{}?include_completed={}", instance, n),
             None => format!("/todos/{}", instance),
@@ -2711,20 +3059,48 @@ mod lease_tests {
     #[tokio::test]
     async fn create_todo_dedups_identical_description() {
         let app = app_with_team("team-a", "tok-a").await;
-        let r1 = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "reviewer", "fix the map bug")).await.unwrap();
+        let r1 = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "reviewer",
+                "fix the map bug",
+            ))
+            .await
+            .unwrap();
         assert_eq!(r1.status(), StatusCode::OK);
         let t1: Todo = serde_json::from_slice(&body_bytes(r1).await).unwrap();
 
         // Second call, same instance + description, different assigned_by —
         // dedup ignores the sender, so it returns the first todo's hash.
-        let r2 = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "rustydemon", "fix the map bug")).await.unwrap();
+        let r2 = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "rustydemon",
+                "fix the map bug",
+            ))
+            .await
+            .unwrap();
         assert_eq!(r2.status(), StatusCode::OK);
         let t2: Todo = serde_json::from_slice(&body_bytes(r2).await).unwrap();
-        assert_eq!(t1.hash, t2.hash, "identical descriptions must collapse to one hash");
-        assert_eq!(t1.assigned_by, t2.assigned_by, "returned todo should be the original");
+        assert_eq!(
+            t1.hash, t2.hash,
+            "identical descriptions must collapse to one hash"
+        );
+        assert_eq!(
+            t1.assigned_by, t2.assigned_by,
+            "returned todo should be the original"
+        );
 
         // List shows exactly one pending todo.
-        let list = app.clone().oneshot(todo_list_req(Some("tok-a"), "d4webdev", None)).await.unwrap();
+        let list = app
+            .clone()
+            .oneshot(todo_list_req(Some("tok-a"), "d4webdev", None))
+            .await
+            .unwrap();
         let todos: Vec<Todo> = serde_json::from_slice(&body_bytes(list).await).unwrap();
         assert_eq!(todos.len(), 1);
     }
@@ -2732,11 +3108,37 @@ mod lease_tests {
     #[tokio::test]
     async fn create_todo_different_description_creates_new_row() {
         let app = app_with_team("team-a", "tok-a").await;
-        let _ = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "reviewer", "fix the map bug")).await.unwrap();
-        let _ = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "reviewer", "fix the gear rarity bug")).await.unwrap();
-        let list = app.clone().oneshot(todo_list_req(Some("tok-a"), "d4webdev", None)).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "reviewer",
+                "fix the map bug",
+            ))
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "reviewer",
+                "fix the gear rarity bug",
+            ))
+            .await
+            .unwrap();
+        let list = app
+            .clone()
+            .oneshot(todo_list_req(Some("tok-a"), "d4webdev", None))
+            .await
+            .unwrap();
         let todos: Vec<Todo> = serde_json::from_slice(&body_bytes(list).await).unwrap();
-        assert_eq!(todos.len(), 2, "distinct descriptions must each create a row");
+        assert_eq!(
+            todos.len(),
+            2,
+            "distinct descriptions must each create a row"
+        );
     }
 
     #[tokio::test]
@@ -2744,13 +3146,35 @@ mod lease_tests {
         // Dedup only considers OPEN todos. A legitimate re-file after
         // completion (same text, genuinely new work) must not collapse.
         let app = app_with_team("team-a", "tok-a").await;
-        let r1 = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "reviewer", "verify map renders")).await.unwrap();
+        let r1 = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "reviewer",
+                "verify map renders",
+            ))
+            .await
+            .unwrap();
         let t1: Todo = serde_json::from_slice(&body_bytes(r1).await).unwrap();
-        let done = app.clone().oneshot(todo_done_req(Some("tok-a"), &t1.hash)).await.unwrap();
+        let done = app
+            .clone()
+            .oneshot(todo_done_req(Some("tok-a"), &t1.hash))
+            .await
+            .unwrap();
         assert_eq!(done.status(), StatusCode::NO_CONTENT);
 
         // Same description again, post-completion → new row, new hash.
-        let r2 = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "reviewer", "verify map renders")).await.unwrap();
+        let r2 = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "reviewer",
+                "verify map renders",
+            ))
+            .await
+            .unwrap();
         let t2: Todo = serde_json::from_slice(&body_bytes(r2).await).unwrap();
         assert_ne!(t1.hash, t2.hash, "re-file after completion is a new ticket");
     }
@@ -2758,19 +3182,49 @@ mod lease_tests {
     #[tokio::test]
     async fn list_todos_include_completed_returns_open_plus_done() {
         let app = app_with_team("team-a", "tok-a").await;
-        let r1 = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "reviewer", "task one")).await.unwrap();
+        let r1 = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "reviewer",
+                "task one",
+            ))
+            .await
+            .unwrap();
         let t1: Todo = serde_json::from_slice(&body_bytes(r1).await).unwrap();
-        let _ = app.clone().oneshot(todo_done_req(Some("tok-a"), &t1.hash)).await.unwrap();
-        let _ = app.clone().oneshot(todo_create_req(Some("tok-a"), "d4webdev", "reviewer", "task two")).await.unwrap();
+        let _ = app
+            .clone()
+            .oneshot(todo_done_req(Some("tok-a"), &t1.hash))
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(todo_create_req(
+                Some("tok-a"),
+                "d4webdev",
+                "reviewer",
+                "task two",
+            ))
+            .await
+            .unwrap();
 
         // Default: open only.
-        let open_only = app.clone().oneshot(todo_list_req(Some("tok-a"), "d4webdev", None)).await.unwrap();
+        let open_only = app
+            .clone()
+            .oneshot(todo_list_req(Some("tok-a"), "d4webdev", None))
+            .await
+            .unwrap();
         let todos: Vec<Todo> = serde_json::from_slice(&body_bytes(open_only).await).unwrap();
         assert_eq!(todos.len(), 1, "default should be open-only");
         assert!(todos[0].completed_at.is_none());
 
         // With include_completed=10: both.
-        let with_done = app.clone().oneshot(todo_list_req(Some("tok-a"), "d4webdev", Some(10))).await.unwrap();
+        let with_done = app
+            .clone()
+            .oneshot(todo_list_req(Some("tok-a"), "d4webdev", Some(10)))
+            .await
+            .unwrap();
         let todos: Vec<Todo> = serde_json::from_slice(&body_bytes(with_done).await).unwrap();
         assert_eq!(todos.len(), 2, "expected open + completed");
         // Open first, then completed.
@@ -2782,7 +3236,11 @@ mod lease_tests {
     async fn list_todos_include_completed_clamps_at_50() {
         // Claiming 9999 shouldn't let a client scan the whole table.
         let app = app_with_team("team-a", "tok-a").await;
-        let r = app.clone().oneshot(todo_list_req(Some("tok-a"), "d4webdev", Some(9999))).await.unwrap();
+        let r = app
+            .clone()
+            .oneshot(todo_list_req(Some("tok-a"), "d4webdev", Some(9999)))
+            .await
+            .unwrap();
         assert_eq!(r.status(), StatusCode::OK);
         // No panic / no 500 is the assertion; actual behavior is internal
         // clamp to 50, which is exercised by the query builder regardless
@@ -2797,7 +3255,10 @@ mod lease_tests {
 
         // RFC3339 with fractional seconds + explicit offset.
         let b = parse_flexible_utc("2026-04-20T20:20:41.765312+00:00").expect("rfc3339 fractional");
-        assert_eq!(b.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-04-20 20:20:41");
+        assert_eq!(
+            b.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-04-20 20:20:41"
+        );
 
         // SQLite default — the exact shape of the 9 stale D4LFG rows that
         // were ghosting as open todos in the GUI because the RFC3339-only
@@ -2807,7 +3268,10 @@ mod lease_tests {
 
         // SQLite default with fractional seconds.
         let d = parse_flexible_utc("2026-04-20 20:20:41.123").expect("sqlite fractional");
-        assert_eq!(d.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-04-20 20:20:41");
+        assert_eq!(
+            d.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-04-20 20:20:41"
+        );
 
         // Garbage stays None.
         assert!(parse_flexible_utc("not a date").is_none());
@@ -2831,11 +3295,19 @@ mod pairing_http_tests {
         let db = db::init_test_db().await.unwrap();
         let now = Utc::now().to_rfc3339();
         sqlx::query("INSERT INTO teams (id, name, created_at) VALUES (?, ?, ?)")
-            .bind(team_id).bind(team_id).bind(&now)
-            .execute(&db).await.unwrap();
+            .bind(team_id)
+            .bind(team_id)
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO team_tokens (token_hash, team_id, created_at) VALUES (?, ?, ?)")
-            .bind(hash_token(member_token)).bind(team_id).bind(&now)
-            .execute(&db).await.unwrap();
+            .bind(hash_token(member_token))
+            .bind(team_id)
+            .bind(&now)
+            .execute(&db)
+            .await
+            .unwrap();
         let (tx, _) = broadcast::channel(256);
         let state = AppState {
             db: db.clone(),
@@ -2868,7 +3340,11 @@ mod pairing_http_tests {
     async fn new_code(app: &Router, member_token: &str) -> String {
         let resp = app
             .clone()
-            .oneshot(post("/pair/codes", Some(member_token), serde_json::json!({})))
+            .oneshot(post(
+                "/pair/codes",
+                Some(member_token),
+                serde_json::json!({}),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -2887,7 +3363,9 @@ mod pairing_http_tests {
     async fn a_member_can_ask_which_team_its_token_is_for() {
         let (app, db) = locked_server_with_team("team-id-1", "tm_member").await;
         sqlx::query("UPDATE teams SET name = 'crabs' WHERE id = 'team-id-1'")
-            .execute(&db).await.unwrap();
+            .execute(&db)
+            .await
+            .unwrap();
 
         let resp = app.oneshot(get("/team", Some("tm_member"))).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -2963,7 +3441,11 @@ mod pairing_http_tests {
         // No Authorization header: the new machine has nothing yet.
         let resp = app
             .clone()
-            .oneshot(post("/pair/redeem", None, serde_json::json!({ "code": code })))
+            .oneshot(post(
+                "/pair/redeem",
+                None,
+                serde_json::json!({ "code": code }),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -3002,7 +3484,10 @@ mod pairing_http_tests {
         let code = new_code(&app, "tok-a").await;
         let redeem = || post("/pair/redeem", None, serde_json::json!({ "code": code }));
 
-        assert_eq!(app.clone().oneshot(redeem()).await.unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            app.clone().oneshot(redeem()).await.unwrap().status(),
+            StatusCode::OK
+        );
         let again = app.clone().oneshot(redeem()).await.unwrap();
         assert_eq!(again.status(), StatusCode::NOT_FOUND);
         assert_eq!(json(again).await["error"], "invalid_code");
@@ -3018,14 +3503,22 @@ mod pairing_http_tests {
         for _ in 0..pairing::MAX_FAILED_ATTEMPTS {
             let resp = app
                 .clone()
-                .oneshot(post("/pair/redeem", None, serde_json::json!({ "code": wrong })))
+                .oneshot(post(
+                    "/pair/redeem",
+                    None,
+                    serde_json::json!({ "code": wrong }),
+                ))
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         }
         let resp = app
             .clone()
-            .oneshot(post("/pair/redeem", None, serde_json::json!({ "code": code })))
+            .oneshot(post(
+                "/pair/redeem",
+                None,
+                serde_json::json!({ "code": code }),
+            ))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -3039,7 +3532,13 @@ mod pairing_http_tests {
             let method = if uri == "/pair/codes" { "POST" } else { "GET" };
             let resp = app
                 .clone()
-                .oneshot(HttpRequest::builder().method(method).uri(uri).body(Body::empty()).unwrap())
+                .oneshot(
+                    HttpRequest::builder()
+                        .method(method)
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
                 .await
                 .unwrap();
             assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{uri}");

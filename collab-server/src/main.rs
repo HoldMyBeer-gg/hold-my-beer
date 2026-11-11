@@ -23,7 +23,9 @@ fn load_dotenv() {
                         let key = key.trim();
                         let val = val.trim().trim_matches('"').trim_matches('\'');
                         if std::env::var(key).is_err() {
-                            unsafe { std::env::set_var(key, val); }
+                            unsafe {
+                                std::env::set_var(key, val);
+                            }
                         }
                     }
                 }
@@ -41,7 +43,9 @@ fn load_dotenv() {
 
 fn token_from_config() -> Option<String> {
     #[derive(serde::Deserialize, Default)]
-    struct Cfg { token: Option<String> }
+    struct Cfg {
+        token: Option<String>,
+    }
     let home = collab_server::home::home_dir()?;
     let contents = std::fs::read_to_string(home.join(".collab.toml")).ok()?;
     toml::from_str::<Cfg>(&contents).ok()?.token
@@ -86,7 +90,13 @@ fn generate_admin_token() -> String {
     let mut bytes = Vec::with_capacity(32);
     bytes.extend_from_slice(a.as_bytes());
     bytes.extend_from_slice(b.as_bytes());
-    format!("adm_{}", bytes.iter().map(|b| format!("{:02x}", b)).collect::<String>())
+    format!(
+        "adm_{}",
+        bytes
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>()
+    )
 }
 
 #[tokio::main]
@@ -118,7 +128,10 @@ async fn main() -> anyhow::Result<()> {
         let tok = generate_admin_token();
         std::fs::write(&env_path, format!("COLLAB_ADMIN_TOKEN={}\n", tok))?;
         println!("✓ Wrote .env with a fresh admin token.");
-        println!("  path:  {}", env_path.canonicalize().unwrap_or(env_path).display());
+        println!(
+            "  path:  {}",
+            env_path.canonicalize().unwrap_or(env_path).display()
+        );
         println!("  token: {}", tok);
         println!();
         println!("This is your ADMIN token (for `collab team create` etc.).");
@@ -133,7 +146,8 @@ async fn main() -> anyhow::Result<()> {
     // COLLAB_TOKEN fallback is back-compat only — new setups should use the
     // unambiguous COLLAB_ADMIN_TOKEN so worker team tokens can live in
     // COLLAB_TOKEN without clobbering the admin secret.
-    let token = std::env::var("COLLAB_ADMIN_TOKEN").ok()
+    let token = std::env::var("COLLAB_ADMIN_TOKEN")
+        .ok()
         .or_else(|| std::env::var("COLLAB_TOKEN").ok())
         .or_else(token_from_config);
     let token = token.ok_or_else(|| {
@@ -165,7 +179,9 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Auth enabled — token required on all requests");
     if args.audit {
-        tracing::info!("Audit log mode enabled — messages retained indefinitely, read_at stamped on delivery");
+        tracing::info!(
+            "Audit log mode enabled — messages retained indefinitely, read_at stamped on delivery"
+        );
     }
     tracing::info!("Server listening on http://{}", addr);
 

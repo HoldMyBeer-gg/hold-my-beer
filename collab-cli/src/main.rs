@@ -1,20 +1,20 @@
 #![doc = include_str!("../../README.md")]
-use clap::{Parser, Subcommand};
 use anyhow::Result;
+use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::path::PathBuf;
 
 mod client;
 mod home;
+mod init;
 mod join;
 mod join_text;
-mod init;
-mod worker;
 mod lifecycle;
 mod team;
 mod team_cli;
 mod team_init;
 mod whoami_text;
+mod worker;
 
 use client::CollabClient;
 
@@ -103,15 +103,16 @@ fn load_dotenv() {
                         let key = key.trim();
                         let val = val.trim().trim_matches('"').trim_matches('\'');
                         match std::env::var(key) {
-                            Err(_) => unsafe { std::env::set_var(key, val); },
+                            Err(_) => unsafe {
+                                std::env::set_var(key, val);
+                            },
                             Ok(existing) if existing != val && key.starts_with("COLLAB_") => {
                                 // Tokens get fingerprinted (first 8 chars).
                                 // Everything else — server URL, instance
                                 // id — shows the full value so the human
                                 // can actually tell what's what. "http://l…"
                                 // is useless.
-                                let is_secret =
-                                    key.contains("TOKEN") || key.contains("SECRET");
+                                let is_secret = key.contains("TOKEN") || key.contains("SECRET");
                                 let display = |s: &str| -> String {
                                     if is_secret {
                                         let pfx: String = s.chars().take(8).collect();
@@ -478,22 +479,32 @@ async fn main() -> Result<()> {
     let file_config = load_config();
 
     // Priority: CLI flag > env var > .env file (already loaded) > config file > default
-    let server = cli.server
+    let server = cli
+        .server
         .or_else(|| std::env::var("COLLAB_SERVER").ok())
         .or(file_config.host.clone())
         .unwrap_or_else(|| "http://localhost:8000".to_string());
 
-    let instance = cli.instance
+    let instance = cli
+        .instance
         .or_else(|| std::env::var("COLLAB_INSTANCE").ok())
         .or(file_config.instance.clone());
 
-    let token = std::env::var("COLLAB_TOKEN").ok().or(file_config.token.clone());
+    let token = std::env::var("COLLAB_TOKEN")
+        .ok()
+        .or(file_config.token.clone());
 
     // Joining and pairing come first: a machine that is not in a team yet
     // has no instance name or token, which most other commands insist on.
     if let Commands::Join { address, code } = cli.command {
         let local = local_config_path();
-        return join::run_join(&address, &code.join(""), instance.as_deref(), local.as_deref()).await;
+        return join::run_join(
+            &address,
+            &code.join(""),
+            instance.as_deref(),
+            local.as_deref(),
+        )
+        .await;
     }
     if matches!(cli.command, Commands::Pair) {
         return join::run_pair(&server, token.as_deref()).await;
@@ -522,7 +533,9 @@ async fn main() -> Result<()> {
                             anyhow::bail!(
                                 "Refusing to init a workers.yml in a codebase managed by team '{}' \
                                  (source: {}). Edit the team manifest and re-run `collab init {}` instead.",
-                                marker.team, marker.source, marker.source
+                                marker.team,
+                                marker.source,
+                                marker.source
                             );
                         }
                     }
@@ -530,15 +543,20 @@ async fn main() -> Result<()> {
                 }
             }
             None => {
-                anyhow::bail!(
-                    "collab init requires a YAML file: collab init workers.yaml"
-                );
+                anyhow::bail!("collab init requires a YAML file: collab init workers.yaml");
             }
         }
         return Ok(());
     }
 
-    if let Commands::Worker { workdir, model, cli_template, auto_reply, batch_wait } = cli.command {
+    if let Commands::Worker {
+        workdir,
+        model,
+        cli_template,
+        auto_reply,
+        batch_wait,
+    } = cli.command
+    {
         let auto_reply = auto_reply.unwrap_or(true);
         let batch_wait = batch_wait.unwrap_or(2000);
 
@@ -562,7 +580,8 @@ async fn main() -> Result<()> {
             std::panic::set_hook(Box::new(move |info| {
                 use std::io::Write;
                 let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
-                let location = info.location()
+                let location = info
+                    .location()
                     .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
                     .unwrap_or_else(|| "<unknown>".into());
                 let payload = info.payload();
@@ -600,17 +619,20 @@ async fn main() -> Result<()> {
         let probe_dir = workdir
             .clone()
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let (reports_to, works_with, teammates, manifest_cli_template,
-             manifest_codebase, manifest_model) =
-            resolve_worker_manifest(&probe_dir, &instance_id);
+        let (
+            reports_to,
+            works_with,
+            teammates,
+            manifest_cli_template,
+            manifest_codebase,
+            manifest_model,
+        ) = resolve_worker_manifest(&probe_dir, &instance_id);
 
         // Priority for each of these: CLI flag > manifest > default.
         let resolved_workdir = workdir
             .or_else(|| manifest_codebase.map(std::path::PathBuf::from))
             .unwrap_or(probe_dir);
-        let resolved_model = model
-            .or(manifest_model)
-            .unwrap_or_default();
+        let resolved_model = model.or(manifest_model).unwrap_or_default();
         let resolved_cli_template = cli_template.or(manifest_cli_template);
 
         let client = CollabClient::new(&server, &instance_id, token.as_deref());
@@ -634,12 +656,19 @@ async fn main() -> Result<()> {
                     );
                 }
             }
-            Ok(client::LeaseOutcome::Conflict { holder_pid, holder_host, seconds_since_heartbeat }) => {
+            Ok(client::LeaseOutcome::Conflict {
+                holder_pid,
+                holder_host,
+                seconds_since_heartbeat,
+            }) => {
                 anyhow::bail!(
                     "Another worker for @{} is already running \
                      (pid={} host={}, heartbeat {}s ago). \
                      Stop it first, or use a different --instance name.",
-                    instance_id, holder_pid, holder_host, seconds_since_heartbeat
+                    instance_id,
+                    holder_pid,
+                    holder_host,
+                    seconds_since_heartbeat
                 );
             }
             Err(e) => {
@@ -649,7 +678,8 @@ async fn main() -> Result<()> {
                 // can compete for messages anyway.
                 eprintln!(
                     "[{}] warning: lease acquire failed ({}). Starting anyway; another worker may already be running.",
-                    chrono::Utc::now().format("%H:%M:%S UTC"), e
+                    chrono::Utc::now().format("%H:%M:%S UTC"),
+                    e
                 );
             }
         }
@@ -668,7 +698,8 @@ async fn main() -> Result<()> {
                 if let Err(e) = hb_client.acquire_lease(pid, &hb_host).await {
                     eprintln!(
                         "[{}] warning: lease heartbeat failed: {}",
-                        chrono::Utc::now().format("%H:%M:%S UTC"), e
+                        chrono::Utc::now().format("%H:%M:%S UTC"),
+                        e
                     );
                 }
             }
@@ -689,7 +720,7 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             #[cfg(unix)]
             let sigterm = async {
-                use tokio::signal::unix::{signal, SignalKind};
+                use tokio::signal::unix::{SignalKind, signal};
                 if let Ok(mut s) = signal(SignalKind::terminate()) {
                     s.recv().await;
                 }
@@ -701,8 +732,11 @@ async fn main() -> Result<()> {
                 _ = tokio::signal::ctrl_c() => {},
                 _ = sigterm => {},
             }
-            eprintln!("\n[{}] @{} releasing lease + clearing presence and exiting…",
-                chrono::Utc::now().format("%H:%M:%S UTC"), shutdown_instance);
+            eprintln!(
+                "\n[{}] @{} releasing lease + clearing presence and exiting…",
+                chrono::Utc::now().format("%H:%M:%S UTC"),
+                shutdown_instance
+            );
             // Fire both in parallel so a slow server doesn't serialise the delays.
             let _ = tokio::join!(
                 shutdown_client.release_lease(pid),
@@ -764,7 +798,9 @@ async fn main() -> Result<()> {
         // Admin commands prefer COLLAB_ADMIN_TOKEN (unambiguous) and fall
         // back to COLLAB_TOKEN (back-compat). This is the fix for the
         // "clobbered my admin token with a team token" trap.
-        let admin_tok = std::env::var("COLLAB_ADMIN_TOKEN").ok().or_else(|| token.clone());
+        let admin_tok = std::env::var("COLLAB_ADMIN_TOKEN")
+            .ok()
+            .or_else(|| token.clone());
         return dispatch_team_command(action, &server, admin_tok.as_deref()).await;
     }
 
@@ -795,16 +831,24 @@ async fn main() -> Result<()> {
             let h = secs / 3600;
             let m = (secs % 3600) / 60;
             let s = secs % 60;
-            if h > 0 { format!("{:>2}:{:02}:{:02}", h, m, s) }
-            else { format!("   {:02}:{:02}", m, s) }
+            if h > 0 {
+                format!("{:>2}:{:02}:{:02}", h, m, s)
+            } else {
+                format!("   {:02}:{:02}", m, s)
+            }
         };
 
         let any_cost = usage.total_cost_usd > 0.0;
-        let header = if any_cost { "Token usage (actual)\n" } else { "Token usage (estimated ~4 chars/token)\n" };
+        let header = if any_cost {
+            "Token usage (actual)\n"
+        } else {
+            "Token usage (estimated ~4 chars/token)\n"
+        };
         println!("{}", header);
 
         // Todo counts per worker — same call pattern the old path used.
-        let mut todo_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut todo_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for row in &usage.workers {
             if let Ok(todos) = client.fetch_todos(&row.worker).await {
                 todo_counts.insert(row.worker.clone(), todos.len());
@@ -813,7 +857,10 @@ async fn main() -> Result<()> {
         let total_todos: usize = todo_counts.values().sum();
 
         let cost_col = if any_cost { "  Cost" } else { "" };
-        println!("{:<20} {:>8} {:>8} {:>6} {:>8}  {:<10} {:<10} {:<6}{}", "Worker", "Input", "Output", "Calls", "Time", "CLI", "Tiers", "Todos", cost_col);
+        println!(
+            "{:<20} {:>8} {:>8} {:>6} {:>8}  {:<10} {:<10} {:<6}{}",
+            "Worker", "Input", "Output", "Calls", "Time", "CLI", "Tiers", "Todos", cost_col
+        );
         println!("{}", "─".repeat(if any_cost { 96 } else { 88 }));
 
         for row in &usage.workers {
@@ -823,8 +870,16 @@ async fn main() -> Result<()> {
                 Some(n) => format!("{}", n),
                 None => "?".to_string(),
             };
-            let cost_str = if any_cost { format!("  ${:.4}", row.cost_usd) } else { String::new() };
-            let cli_name = if row.cli.is_empty() { "?" } else { row.cli.as_str() };
+            let cost_str = if any_cost {
+                format!("  ${:.4}", row.cost_usd)
+            } else {
+                String::new()
+            };
+            let cli_name = if row.cli.is_empty() {
+                "?"
+            } else {
+                row.cli.as_str()
+            };
             println!(
                 "{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}",
                 row.worker,
@@ -841,8 +896,16 @@ async fn main() -> Result<()> {
 
         println!("{}", "─".repeat(if any_cost { 96 } else { 88 }));
         let total_tier_str = format!("{}F/{}L", usage.total_full_calls, usage.total_light_calls);
-        let total_todo_str = if total_todos > 0 { format!("{}", total_todos) } else { "—".to_string() };
-        let total_cost_str = if any_cost { format!("  ${:.4}", usage.total_cost_usd) } else { String::new() };
+        let total_todo_str = if total_todos > 0 {
+            format!("{}", total_todos)
+        } else {
+            "—".to_string()
+        };
+        let total_cost_str = if any_cost {
+            format!("  ${:.4}", usage.total_cost_usd)
+        } else {
+            String::new()
+        };
         println!(
             "{:<20} {:>7}K {:>7}K {:>6} {:>8}  {:<10} {:<10} {:<6}{}",
             "TOTAL",
@@ -877,7 +940,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::List { all, from, since } => {
-            client.list_messages(!all, from.as_deref(), since.as_deref()).await?;
+            client
+                .list_messages(!all, from.as_deref(), since.as_deref())
+                .await?;
         }
         Commands::Reply { sender, message } => {
             client.reply_to_latest(&sender, &message).await?;
@@ -888,20 +953,20 @@ async fn main() -> Result<()> {
         Commands::Status => {
             client.show_status().await?;
         }
-        Commands::Send { recipient, message, refs } => {
+        Commands::Send {
+            recipient,
+            message,
+            refs,
+        } => {
             let recipient = recipient.trim_start_matches('@');
-            let ref_hashes = refs.map(|r| {
-                r.split(',').map(|s| s.trim().to_string()).collect()
-            });
+            let ref_hashes = refs.map(|r| r.split(',').map(|s| s.trim().to_string()).collect());
             client.add_message(recipient, &message, ref_hashes).await?;
         }
         Commands::Stream { status } => {
             client.stream_messages(status).await?;
         }
         Commands::Broadcast { message, refs } => {
-            let ref_hashes = refs.map(|r| {
-                r.split(',').map(|s| s.trim().to_string()).collect()
-            });
+            let ref_hashes = refs.map(|r| r.split(',').map(|s| s.trim().to_string()).collect());
             client.broadcast(&message, ref_hashes).await?;
         }
         Commands::History { filter } => {
@@ -909,11 +974,17 @@ async fn main() -> Result<()> {
             client.show_history(filter_id).await?;
         }
         Commands::Todo { action } => match action {
-            TodoAction::Add { instance, description } => {
+            TodoAction::Add {
+                instance,
+                description,
+            } => {
                 let instance = instance.trim_start_matches('@');
                 client.todo_add(instance, &description).await?;
             }
-            TodoAction::List { instance, for_instance } => {
+            TodoAction::List {
+                instance,
+                for_instance,
+            } => {
                 let target = for_instance.as_deref().or(instance.as_deref());
                 let target = target.map(|s| s.trim_start_matches('@'));
                 client.todo_list(target).await?;
@@ -922,9 +993,16 @@ async fn main() -> Result<()> {
                 client.todo_done(&hash).await?;
             }
         },
-        Commands::Roster | Commands::ConfigPath | Commands::Usage | Commands::Init { .. }
-        | Commands::Start { .. } | Commands::Stop { .. } | Commands::Restart { .. }
-        | Commands::Ps | Commands::Team { .. } | Commands::Whoami
+        Commands::Roster
+        | Commands::ConfigPath
+        | Commands::Usage
+        | Commands::Init { .. }
+        | Commands::Start { .. }
+        | Commands::Stop { .. }
+        | Commands::Restart { .. }
+        | Commands::Ps
+        | Commands::Team { .. }
+        | Commands::Whoami
         | Commands::Role { .. } => unreachable!(),
         #[allow(unreachable_patterns)]
         #[allow(unreachable_patterns)]
@@ -943,12 +1021,18 @@ fn parse_target(target: &str) -> Result<Vec<String>> {
     } else if target.starts_with('@') {
         // Single instance
         let name = &target[1..];
-        if name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        if name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        {
             Ok(vec![name.to_string()])
         } else {
             Err(anyhow::anyhow!("Invalid instance name: {}", name))
         }
-    } else if target.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    } else if target
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         // Instance name without @
         Ok(vec![target.to_string()])
     } else {
@@ -967,7 +1051,10 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
             serde_json::from_str(&content).unwrap_or_default();
         for (name, ws) in &state {
             if !lifecycle::process_exists(ws.pid) {
-                println!("⚠ Cleaning up stale PID for {} (PID {} no longer running)", name, ws.pid);
+                println!(
+                    "⚠ Cleaning up stale PID for {} (PID {} no longer running)",
+                    name, ws.pid
+                );
                 lifecycle::remove_worker_pid(&pids_file, name)?;
             }
         }
@@ -977,7 +1064,8 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
     let workers = if targets[0] == "all" {
         manifest.clone()
     } else {
-        manifest.into_iter()
+        manifest
+            .into_iter()
             .filter(|w| targets.contains(&w.name))
             .collect()
     };
@@ -1014,7 +1102,11 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
             let last = v.get("last_seen")?.as_str()?;
             let parsed = chrono::DateTime::parse_from_rfc3339(last).ok()?;
             let delta = (live_now - parsed.with_timezone(&chrono::Utc)).num_seconds();
-            if delta < LIVENESS_WINDOW_SECS { Some(id) } else { None }
+            if delta < LIVENESS_WINDOW_SECS {
+                Some(id)
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -1029,7 +1121,11 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
         anyhow::bail!(
             "Refusing to start — these workers are already heartbeating on the server: {}. \
              Run `collab stop {}` first, or start workers individually by name.",
-            blocked.iter().map(|n| format!("@{}", n)).collect::<Vec<_>>().join(", "),
+            blocked
+                .iter()
+                .map(|n| format!("@{}", n))
+                .collect::<Vec<_>>()
+                .join(", "),
             blocked[0]
         );
     }
@@ -1047,7 +1143,10 @@ async fn lifecycle_start(target: &str, server: &str, token: Option<&str>) -> Res
         )?;
 
         let pid = child.id();
-        let mut cmd = format!("collab worker --workdir {} --model {}", worker.output_dir, worker.model);
+        let mut cmd = format!(
+            "collab worker --workdir {} --model {}",
+            worker.output_dir, worker.model
+        );
         if let Some(tmpl) = &worker.cli_template {
             cmd.push_str(&format!(" --cli-template {:?}", tmpl));
         }
@@ -1066,7 +1165,8 @@ async fn lifecycle_stop(target: &str, server: &str, token: Option<&str>) -> Resu
     let (_manifest, pids_file) = load_lifecycle_manifest()?;
 
     // Read current PIDs
-    let mut state: std::collections::HashMap<String, lifecycle::WorkerState> = if pids_file.exists() {
+    let mut state: std::collections::HashMap<String, lifecycle::WorkerState> = if pids_file.exists()
+    {
         let content = std::fs::read_to_string(&pids_file)?;
         serde_json::from_str(&content).unwrap_or_default()
     } else {
@@ -1078,7 +1178,8 @@ async fn lifecycle_stop(target: &str, server: &str, token: Option<&str>) -> Resu
     let workers_to_stop: Vec<String> = if targets[0] == "all" {
         state.keys().cloned().collect()
     } else {
-        targets.iter()
+        targets
+            .iter()
             .filter(|t| state.contains_key(*t))
             .cloned()
             .collect()
@@ -1126,7 +1227,8 @@ async fn lifecycle_status() -> Result<()> {
     }
 
     let content = std::fs::read_to_string(&pids_file)?;
-    let state: std::collections::HashMap<String, lifecycle::WorkerState> = serde_json::from_str(&content)?;
+    let state: std::collections::HashMap<String, lifecycle::WorkerState> =
+        serde_json::from_str(&content)?;
 
     println!("Running workers:");
     for (name, worker_state) in &state {
@@ -1238,7 +1340,8 @@ fn load_lifecycle_manifest() -> Result<(Vec<lifecycle::WorkerManifestEntry>, std
 /// Walk UP from cwd looking for a `.collab/team-managed` marker. Returns
 /// the loaded TeamConfig + the marker's source path + the codebase dir
 /// that held the marker.
-fn find_team_config_walking_up() -> Result<Option<(team::TeamConfig, std::path::PathBuf, std::path::PathBuf)>> {
+fn find_team_config_walking_up()
+-> Result<Option<(team::TeamConfig, std::path::PathBuf, std::path::PathBuf)>> {
     let cwd = std::env::current_dir()?;
 
     // First: walk up looking for a marker. That's the canonical case —
@@ -1248,8 +1351,9 @@ fn find_team_config_walking_up() -> Result<Option<(team::TeamConfig, std::path::
     loop {
         if let Some(marker) = team::TeamManagedMarker::read(&dir) {
             let source = std::path::PathBuf::from(&marker.source);
-            let cfg = team::TeamConfig::from_yaml_file(&source)
-                .map_err(|e| anyhow::anyhow!("loading team manifest {}: {}", source.display(), e))?;
+            let cfg = team::TeamConfig::from_yaml_file(&source).map_err(|e| {
+                anyhow::anyhow!("loading team manifest {}: {}", source.display(), e)
+            })?;
             return Ok(Some((cfg, source, dir)));
         }
         if !dir.pop() {
@@ -1297,15 +1401,21 @@ fn warn_on_deprecated_command_aliases() {
     for arg in &args[1..] {
         match arg.as_str() {
             "add" => {
-                eprintln!("(deprecation) `collab add` is now `collab send`. The old name still works.");
+                eprintln!(
+                    "(deprecation) `collab add` is now `collab send`. The old name still works."
+                );
                 return;
             }
             "lifecycle-status" => {
-                eprintln!("(deprecation) `collab lifecycle-status` is now `collab ps`. The old name still works.");
+                eprintln!(
+                    "(deprecation) `collab lifecycle-status` is now `collab ps`. The old name still works."
+                );
                 return;
             }
             "--role" if args.iter().any(|a| a == "stream") => {
-                eprintln!("(deprecation) `collab stream --role` is now `--status`. The old flag still works.");
+                eprintln!(
+                    "(deprecation) `collab stream --role` is now `--status`. The old flag still works."
+                );
                 return;
             }
             _ => {}
@@ -1324,8 +1434,14 @@ async fn dispatch_team_command(
         TeamAction::Show { name, from } => {
             team_cli::show(server, admin_token, &name, from.as_deref()).await
         }
-        TeamAction::RotateToken { name } => team_cli::rotate_token(server, admin_token, &name).await,
-        TeamAction::Adopt { workers_yml, team_yml, mint_token } => {
+        TeamAction::RotateToken { name } => {
+            team_cli::rotate_token(server, admin_token, &name).await
+        }
+        TeamAction::Adopt {
+            workers_yml,
+            team_yml,
+            mint_token,
+        } => {
             if mint_token {
                 team_cli::adopt_with_token_mint(&workers_yml, &team_yml, server, admin_token).await
             } else {
@@ -1335,11 +1451,7 @@ async fn dispatch_team_command(
     }
 }
 
-async fn dispatch_whoami(
-    server: &str,
-    instance: Option<&str>,
-    token: Option<&str>,
-) -> Result<()> {
+async fn dispatch_whoami(server: &str, instance: Option<&str>, token: Option<&str>) -> Result<()> {
     // Instance + team discovery. "collab whoami" is the first thing a cold-
     // start worker (human or LLM) runs, so we do our best to show something
     // useful even when things are misconfigured — noting the missing pieces
@@ -1356,7 +1468,9 @@ async fn dispatch_whoami(
     // is one, since an admin token belongs to no team.
     let admin_for_team = std::env::var("COLLAB_ADMIN_TOKEN").ok();
     let server_team = join::team_of_token(server, token.or(admin_for_team.as_deref())).await;
-    let marker_ref = marker.as_ref().map(|m| (m.team.as_str(), m.source.as_str()));
+    let marker_ref = marker
+        .as_ref()
+        .map(|m| (m.team.as_str(), m.source.as_str()));
     for line in whoami_text::team_lines(marker_ref, &server_team) {
         println!("{line}");
     }
@@ -1446,17 +1560,24 @@ fn dispatch_role(action: RoleAction, instance: Option<&str>) -> Result<()> {
 
     match action {
         RoleAction::Show => {
-            let instance = instance.ok_or_else(|| anyhow::anyhow!(
-                "Set $COLLAB_INSTANCE (or --instance) so we know which role entry to print"
-            ))?;
+            let instance = instance.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Set $COLLAB_INSTANCE (or --instance) so we know which role entry to print"
+                )
+            })?;
             match &governing {
                 GoverningManifest::Team(cfg, source) => {
-                    let me = cfg.workers.iter().find(|w| w.name == instance).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "No entry for @{} in {}. Add it or check $COLLAB_INSTANCE.",
-                            instance, source.display()
-                        )
-                    })?;
+                    let me = cfg
+                        .workers
+                        .iter()
+                        .find(|w| w.name == instance)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "No entry for @{} in {}. Add it or check $COLLAB_INSTANCE.",
+                                instance,
+                                source.display()
+                            )
+                        })?;
                     println!("role (from team.yml: {})", source.display());
                     println!("  team:            {}", cfg.team);
                     println!("  name:            {}", me.name);
@@ -1474,7 +1595,11 @@ fn dispatch_role(action: RoleAction, instance: Option<&str>) -> Result<()> {
                     if !me.works_with.is_empty() {
                         println!(
                             "  works_with:      {}",
-                            me.works_with.iter().map(|n| format!("@{}", n)).collect::<Vec<_>>().join(", ")
+                            me.works_with
+                                .iter()
+                                .map(|n| format!("@{}", n))
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         );
                     }
                     if let Some(tasks) = &me.tasks {
@@ -1485,11 +1610,13 @@ fn dispatch_role(action: RoleAction, instance: Option<&str>) -> Result<()> {
                     let contents = std::fs::read_to_string(source)?;
                     let cfg: init::ProjectConfig = serde_yaml::from_str(&contents)
                         .map_err(|e| anyhow::anyhow!("parsing {}: {}", source.display(), e))?;
-                    let me = cfg.workers.iter().find(|w| w.name == instance).ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "No entry for @{} in {}.", instance, source.display()
-                        )
-                    })?;
+                    let me = cfg
+                        .workers
+                        .iter()
+                        .find(|w| w.name == instance)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("No entry for @{} in {}.", instance, source.display())
+                        })?;
                     println!("role (from workers.yml: {})", source.display());
                     println!("  name:            {}", me.name);
                     println!("  role:            {}", me.role);
@@ -1502,7 +1629,11 @@ fn dispatch_role(action: RoleAction, instance: Option<&str>) -> Result<()> {
                     if !me.hands_off_to.is_empty() {
                         println!(
                             "  hands_off_to:    {}",
-                            me.hands_off_to.iter().map(|n| format!("@{}", n)).collect::<Vec<_>>().join(", ")
+                            me.hands_off_to
+                                .iter()
+                                .map(|n| format!("@{}", n))
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         );
                     }
                     if let Some(tasks) = &me.tasks {
@@ -1614,8 +1745,14 @@ struct WorkerManifestLookup {
 fn resolve_worker_manifest(
     workdir: &std::path::Path,
     instance_id: &str,
-) -> (Option<String>, Vec<String>, Vec<(String, String)>, Option<String>,
-      Option<String>, Option<String>) {
+) -> (
+    Option<String>,
+    Vec<String>,
+    Vec<(String, String)>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     let lookup = resolve_worker_manifest_inner(workdir, instance_id);
     (
         lookup.reports_to,
@@ -1660,7 +1797,8 @@ fn resolve_worker_manifest_inner(
                 eprintln!(
                     "warning: .collab/team-managed points at {} but it failed to load: {}. \
                      Falling back to legacy manifest resolution.",
-                    yaml_path.display(), e
+                    yaml_path.display(),
+                    e
                 );
             }
         }

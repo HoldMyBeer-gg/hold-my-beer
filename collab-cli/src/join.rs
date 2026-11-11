@@ -6,7 +6,7 @@
 //! code for a team token of its own, and saves it. Text handling lives in
 //! [`crate::join_text`]; this module talks to the server and the disk.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -218,7 +218,9 @@ pub async fn run_join(
 /// `collab pair`.
 pub async fn run_pair(server: &str, token: Option<&str>) -> Result<()> {
     let token = token.ok_or_else(|| {
-        anyhow!("This machine is not in a team yet. Join one first with `collab join <address> <code>`.")
+        anyhow!(
+            "This machine is not in a team yet. Join one first with `collab join <address> <code>`."
+        )
     })?;
     let server = normalize_server(server);
     let pair = request_code(&server, token).await?;

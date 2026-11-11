@@ -1,11 +1,11 @@
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::sync::atomic::Ordering;
+use std::sync::OnceLock;
 use tauri::{Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
 use tauri_plugin_shell::ShellExt;
 
-use crate::{gui_config_path, legacy_gui_config_path, collab_toml_path, AppState, SavedConfig};
+use crate::{collab_toml_path, gui_config_path, legacy_gui_config_path, AppState, SavedConfig};
 
 /// User's interactive-shell PATH, cached at first use.
 ///
@@ -43,7 +43,9 @@ fn resolve_user_path() -> String {
             };
             let fallback = std::env::var("PATH").unwrap_or_default();
             if resolved.is_empty() {
-                eprintln!("[path] resolving user shell PATH failed — falling back to inherited PATH");
+                eprintln!(
+                    "[path] resolving user shell PATH failed — falling back to inherited PATH"
+                );
                 fallback
             } else if resolved == fallback {
                 // Already matches — no-op for people launching from a terminal.

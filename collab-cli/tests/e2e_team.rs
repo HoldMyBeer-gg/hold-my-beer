@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use collab_server::{create_app, db, AppState, BroadcastMsg};
+use collab_server::{AppState, BroadcastMsg, create_app, db};
 use holdmybeer_cli::client::CollabClient;
 use holdmybeer_cli::team::TeamManagedMarker;
 use holdmybeer_cli::team_init;
@@ -53,7 +53,11 @@ async fn admin_create_team(server: &str, name: &str) -> String {
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 200, "admin create team must succeed");
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "admin create team must succeed"
+    );
     let body: serde_json::Value = resp.json().await.unwrap();
     body["token"].as_str().unwrap().to_string()
 }
@@ -100,7 +104,11 @@ async fn team_happy_path_init_messages_and_lease() {
 
     // 5. Duplicate spawn: second process claiming rigger's slot from a
     //    different pid must get a conflict.
-    match client_rigger.acquire_lease(999, "other-host").await.unwrap() {
+    match client_rigger
+        .acquire_lease(999, "other-host")
+        .await
+        .unwrap()
+    {
         holdmybeer_cli::client::LeaseOutcome::Conflict { holder_pid, .. } => {
             assert_eq!(holder_pid, 100, "conflict must report the real holder");
         }
@@ -108,7 +116,10 @@ async fn team_happy_path_init_messages_and_lease() {
     }
 
     // 6. Rigger sends a message to shader.
-    client_rigger.add_message("shader", "rig ready for shading", None).await.unwrap();
+    client_rigger
+        .add_message("shader", "rig ready for shading", None)
+        .await
+        .unwrap();
 
     // 7. Shader's pending-message list shows it.
     let pending = client_shader.fetch_pending_messages().await.unwrap();
@@ -122,7 +133,11 @@ async fn team_happy_path_init_messages_and_lease() {
     //    trying to re-init it must fail loudly (guards the double-spawn
     //    scenario we engineered the marker file to prevent).
     let stray_workers_yml = codebase_a.join("workers.yml");
-    fs::write(&stray_workers_yml, "workers:\n  - name: stray\n    role: r\n").unwrap();
+    fs::write(
+        &stray_workers_yml,
+        "workers:\n  - name: stray\n    role: r\n",
+    )
+    .unwrap();
     // Re-running team_init::run picks up the stray workers.yml and refuses.
     let err = team_init::run(&team_yml).unwrap_err();
     let err_str = format!("{:#}", err);
@@ -144,8 +159,14 @@ async fn cross_team_messages_stay_isolated() {
     let c_blender = CollabClient::new(&server, "printer", Some(&token_blender));
     let c_bambu = CollabClient::new(&server, "printer", Some(&token_bambu));
 
-    c_blender.add_message("printer", "from blender team", None).await.unwrap();
-    c_bambu.add_message("printer", "from bambu team", None).await.unwrap();
+    c_blender
+        .add_message("printer", "from blender team", None)
+        .await
+        .unwrap();
+    c_bambu
+        .add_message("printer", "from bambu team", None)
+        .await
+        .unwrap();
 
     let blender_inbox = c_blender.fetch_pending_messages().await.unwrap();
     let bambu_inbox = c_bambu.fetch_pending_messages().await.unwrap();

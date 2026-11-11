@@ -17,11 +17,11 @@
 //!     / `collab team rotate-token`. Keeping init offline makes it safe to run
 //!     before the server is even up.
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::team::{expand_tilde, TeamConfig, TeamManagedMarker, TeamWorker};
+use crate::team::{TeamConfig, TeamManagedMarker, TeamWorker, expand_tilde};
 
 /// Run `collab init <team.yml>`.
 ///
@@ -29,8 +29,7 @@ use crate::team::{expand_tilde, TeamConfig, TeamManagedMarker, TeamWorker};
 /// form of it) — it's embedded in every AGENT.md as the source-of-truth
 /// pointer, so relative paths would rot the moment the human cd's elsewhere.
 pub fn run(yaml_path: &Path) -> Result<()> {
-    let yaml_path = fs::canonicalize(yaml_path)
-        .unwrap_or_else(|_| yaml_path.to_path_buf());
+    let yaml_path = fs::canonicalize(yaml_path).unwrap_or_else(|_| yaml_path.to_path_buf());
 
     let cfg = TeamConfig::from_yaml_file(&yaml_path)
         .with_context(|| format!("parsing {}", yaml_path.display()))?;
@@ -80,8 +79,13 @@ pub fn run(yaml_path: &Path) -> Result<()> {
 /// always a typo we'd rather surface than paper over.
 fn resolve_codebase_path(raw: &str) -> Result<PathBuf> {
     let expanded = expand_tilde(raw);
-    let canon = fs::canonicalize(&expanded)
-        .map_err(|e| anyhow!("codebase_path '{}' does not exist or isn't accessible: {}", raw, e))?;
+    let canon = fs::canonicalize(&expanded).map_err(|e| {
+        anyhow!(
+            "codebase_path '{}' does not exist or isn't accessible: {}",
+            raw,
+            e
+        )
+    })?;
     if !canon.is_dir() {
         anyhow::bail!("codebase_path '{}' is not a directory", raw);
     }
@@ -99,7 +103,9 @@ fn ensure_no_competing_manifest(codebase: &Path, team: &str, worker_name: &str) 
             "{} already has a workers.yml. Two manifests for one codebase will \
              double-spawn workers and burn quota. Run `collab team adopt {} {}` \
              to fold it into the team manifest, or delete it manually.",
-            codebase.display(), workers_yml.display(), "<team.yml>"
+            codebase.display(),
+            workers_yml.display(),
+            "<team.yml>"
         );
     }
 
@@ -109,8 +115,11 @@ fn ensure_no_competing_manifest(codebase: &Path, team: &str, worker_name: &str) 
                 "{} is managed by team '{}' (source: {}). \
                  Worker '{}' can't belong to two teams. Remove the existing marker \
                  (rm {}/.collab/team-managed) if you're deliberately retargeting.",
-                codebase.display(), marker.team, marker.source,
-                worker_name, codebase.display()
+                codebase.display(),
+                marker.team,
+                marker.source,
+                worker_name,
+                codebase.display()
             );
         }
     }
@@ -380,7 +389,10 @@ mod tests {
         assert!(agent_a.contains("You are **a**"));
         assert!(agent_a.contains("team **t**"));
         assert!(agent_a.contains("`b`"), "teammate listed");
-        assert!(agent_a.contains("managed-by: team=t"), "provenance header present");
+        assert!(
+            agent_a.contains("managed-by: team=t"),
+            "provenance header present"
+        );
     }
 
     #[test]
@@ -447,8 +459,11 @@ mod tests {
         );
         // Use {:#} to render the full anyhow error chain (top context + source).
         let err = format!("{:#}", run(&yaml_path).unwrap_err());
-        assert!(err.contains("does not exist") || err.contains("isn't accessible"),
-            "got: {}", err);
+        assert!(
+            err.contains("does not exist") || err.contains("isn't accessible"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]
@@ -463,14 +478,17 @@ mod tests {
             tmp.path(),
             &format!(
                 "team: multi\nworkers:\n  - name: alpha\n    role: alpha-role\n    codebase_path: {}\n  - name: beta\n    role: beta-role\n    codebase_path: {}\n",
-                codebase_a.display(), codebase_b.display()
+                codebase_a.display(),
+                codebase_b.display()
             ),
         );
         run(&yaml_path).unwrap();
 
         let agent_alpha = fs::read_to_string(codebase_a.join("alpha/AGENT.md")).unwrap();
         // Alpha's AGENT.md must reference beta's actual codebase path.
-        assert!(agent_alpha.contains(&codebase_b.display().to_string()),
-            "alpha's AGENT.md must show beta's absolute codebase path");
+        assert!(
+            agent_alpha.contains(&codebase_b.display().to_string()),
+            "alpha's AGENT.md must show beta's absolute codebase path"
+        );
     }
 }

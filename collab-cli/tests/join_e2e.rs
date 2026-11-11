@@ -3,11 +3,11 @@
 //! Runs the HTTP server in-process on a random port, like `e2e_team.rs`, and
 //! drives it through the same functions the two commands call.
 
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
-use collab_server::{create_app, db, AppState, BroadcastMsg};
+use collab_server::{AppState, BroadcastMsg, create_app, db};
 use holdmybeer_cli::client::CollabClient;
 use holdmybeer_cli::join;
 use holdmybeer_cli::whoami_text::ServerTeam;
@@ -122,7 +122,10 @@ async fn a_joined_machine_can_learn_its_team_from_the_server() {
         join::team_of_token(&server, Some("tm_wrong")).await,
         ServerTeam::Unknown
     );
-    assert_eq!(join::team_of_token(&server, None).await, ServerTeam::Unknown);
+    assert_eq!(
+        join::team_of_token(&server, None).await,
+        ServerTeam::Unknown
+    );
     assert_eq!(
         join::team_of_token("http://127.0.0.1:1", Some(&joined.token)).await,
         ServerTeam::Unknown

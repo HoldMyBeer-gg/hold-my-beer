@@ -10,11 +10,11 @@
 //! random port and drives it with the CLI's own client code. No worker
 //! process is spawned.
 
-use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
-use collab_server::{create_app, db, AppState, BroadcastMsg};
+use collab_server::{AppState, BroadcastMsg, create_app, db};
 use holdmybeer_cli::client::{CollabClient, LeaseOutcome};
 use holdmybeer_cli::lifecycle;
 use tokio::sync::broadcast;

@@ -13,7 +13,7 @@ use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use assert_cmd::Command;
-use collab_server::{create_app, db, AppState, BroadcastMsg};
+use collab_server::{AppState, BroadcastMsg, create_app, db};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 
@@ -34,7 +34,9 @@ async fn start_server() -> String {
     let app = create_app(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
     format!("http://{}", addr)
 }
 
@@ -72,21 +74,33 @@ async fn migration_adopt_then_start_finds_team_manifest() {
 
     // Step 1: adopt. This is a pure-local op, no server call.
     let adopt = collab()
-        .args(["team", "adopt",
+        .args([
+            "team",
+            "adopt",
             repo.join("workers.yml").to_str().unwrap(),
-            team_yml.to_str().unwrap()])
+            team_yml.to_str().unwrap(),
+        ])
         .env("HOME", tmp.path()) // isolate ~/.collab.toml lookup
         .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
         .assert()
         .success();
     let adopt_out = String::from_utf8_lossy(&adopt.get_output().stdout).to_string();
-    assert!(adopt_out.contains("Next steps"),
-        "adopt must print migration guidance; got: {}", adopt_out);
-    assert!(adopt_out.contains("collab team create"),
-        "adopt must tell the human to mint a token; got: {}", adopt_out);
+    assert!(
+        adopt_out.contains("Next steps"),
+        "adopt must print migration guidance; got: {}",
+        adopt_out
+    );
+    assert!(
+        adopt_out.contains("collab team create"),
+        "adopt must tell the human to mint a token; got: {}",
+        adopt_out
+    );
     assert!(team_yml.exists(), "team.yml created");
-    assert!(!repo.join("workers.yml").exists(), "legacy workers.yml removed");
+    assert!(
+        !repo.join("workers.yml").exists(),
+        "legacy workers.yml removed"
+    );
     assert!(repo.join(".collab/team-managed").exists(), "marker written");
 
     // Step 2: init regenerates AGENT.md files.
@@ -128,7 +142,11 @@ async fn migration_adopt_then_start_finds_team_manifest() {
         "collab ps from team-managed dir must NOT say 'Manifest not found' — regression: {}",
         ps_stderr
     );
-    assert!(ps.status.success(), "collab ps must exit 0 when no workers running; stderr: {}", ps_stderr);
+    assert!(
+        ps.status.success(),
+        "collab ps must exit 0 when no workers running; stderr: {}",
+        ps_stderr
+    );
 }
 
 /// Sibling test: `collab start all` from a team-managed codebase. We don't
@@ -202,7 +220,9 @@ async fn start_all_in_team_managed_dir_resolves_manifest() {
     assert!(
         !stderr.contains("Manifest not found") && !stdout.contains("Manifest not found"),
         "start all from team-managed dir must not hit 'Manifest not found' — regression bit user 2026-04-17. \
-         stdout: {}\nstderr: {}", stdout, stderr
+         stdout: {}\nstderr: {}",
+        stdout,
+        stderr
     );
 }
 
@@ -225,11 +245,13 @@ async fn adopt_with_mint_token_creates_team_on_server() {
 
     let out = collab()
         .args([
-            "team", "adopt",
+            "team",
+            "adopt",
             repo.join("workers.yml").to_str().unwrap(),
             team_yml.to_str().unwrap(),
             "--mint-token",
-            "--server", &server,
+            "--server",
+            &server,
         ])
         .env("COLLAB_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
@@ -237,6 +259,14 @@ async fn adopt_with_mint_token_creates_team_on_server() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&out.get_output().stdout);
-    assert!(stdout.contains("team_id"), "mint step printed team_id; got: {}", stdout);
-    assert!(stdout.contains("token:"), "mint step printed token; got: {}", stdout);
+    assert!(
+        stdout.contains("team_id"),
+        "mint step printed team_id; got: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("token:"),
+        "mint step printed token; got: {}",
+        stdout
+    );
 }
