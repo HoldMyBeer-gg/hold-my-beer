@@ -14,6 +14,7 @@ mod lifecycle;
 mod team;
 mod team_cli;
 mod team_init;
+mod whoami_text;
 
 use client::CollabClient;
 
@@ -1350,12 +1351,14 @@ async fn dispatch_whoami(
     println!("  server:     {}", server);
     println!("  instance:   {}", instance.unwrap_or("<unset>"));
 
-    match &marker {
-        Some(m) => {
-            println!("  team:       {}", m.team);
-            println!("  team.yml:   {}", m.source);
-        }
-        None => println!("  team:       <legacy> (no .collab/team-managed marker in this repo)"),
+    // A machine that joined with `collab join` has no marker; the server
+    // knows which team its token is for. Ask with the team token when there
+    // is one, since an admin token belongs to no team.
+    let admin_for_team = std::env::var("COLLAB_ADMIN_TOKEN").ok();
+    let server_team = join::team_of_token(server, token.or(admin_for_team.as_deref())).await;
+    let marker_ref = marker.as_ref().map(|m| (m.team.as_str(), m.source.as_str()));
+    for line in whoami_text::team_lines(marker_ref, &server_team) {
+        println!("{line}");
     }
 
     // Token with kind detection. Prefixes were introduced exactly so the

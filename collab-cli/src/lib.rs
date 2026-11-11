@@ -12,3 +12,4 @@ pub mod lifecycle;
 pub mod team;
 pub mod team_cli;
 pub mod team_init;
+pub mod whoami_text;
