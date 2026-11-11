@@ -38,6 +38,7 @@ async fn start_server() -> String {
         tx,
         sse_subscribers: Arc::new(AtomicUsize::new(0)),
         started_at: Instant::now(),
+        pairing: Default::default(),
     };
     let app = create_app(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

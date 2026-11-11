@@ -32,6 +32,7 @@ async fn start_server_in_process() -> String {
         tx,
         sse_subscribers: Arc::new(AtomicUsize::new(0)),
         started_at: Instant::now(),
+        pairing: Default::default(),
     };
     let app = create_app(state);
 
