@@ -1,3 +1,9 @@
+// Handlers return `Result<Response, Response>` so an error can carry a JSON
+// body that explains itself. A response is a large value, which this lint
+// flags, but an error here is built once per failed request and boxing
+// every one would only add noise.
+#![allow(clippy::result_large_err)]
+
 pub mod db;
 pub mod home;
 pub mod pairing;
@@ -2387,7 +2393,6 @@ mod lease_tests {
 
     #[tokio::test]
     async fn lease_different_pid_stale_is_takeover() {
-        let app = app_with_legacy_token(None).await;
         // Directly plant a stale lease so we don't need to sleep 30s.
         let db = db::init_test_db().await.unwrap();
         let stale = (Utc::now() - Duration::seconds(LEASE_TTL_SECS + 5)).to_rfc3339();

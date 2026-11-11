@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use collab_server::{AppState, BroadcastMsg, create_app, db};

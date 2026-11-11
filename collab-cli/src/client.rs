@@ -116,10 +116,10 @@ pub fn load_read_state() -> ReadState {
 }
 
 pub fn save_read_state(state: &ReadState) {
-    if let Some(path) = state_path() {
-        if let Ok(s) = toml::to_string(state) {
-            let _ = std::fs::write(path, s);
-        }
+    if let Some(path) = state_path()
+        && let Ok(s) = toml::to_string(state)
+    {
+        let _ = std::fs::write(path, s);
     }
 }
 
@@ -504,20 +504,18 @@ impl CollabClient {
             let prefix = prefix.trim_start_matches('@').to_lowercase();
             // Find the timestamp of the referenced message (search history for it)
             let history_url = format!("{}/history/{}", self.base_url, self.instance_id);
-            if let Ok(resp) = self.auth(self.client.get(&history_url)).send().await {
-                if let Ok(history) = resp.json::<Vec<Message>>().await {
-                    if let Some(anchor) = history.iter().find(|m| m.hash.starts_with(&prefix)) {
-                        let anchor_ts = anchor.timestamp;
-                        messages.retain(|m| m.timestamp > anchor_ts);
-                    } else {
-                        anyhow::bail!("No message found with hash starting '{}'", prefix);
-                    }
+            if let Ok(resp) = self.auth(self.client.get(&history_url)).send().await
+                && let Ok(history) = resp.json::<Vec<Message>>().await
+            {
+                if let Some(anchor) = history.iter().find(|m| m.hash.starts_with(&prefix)) {
+                    let anchor_ts = anchor.timestamp;
+                    messages.retain(|m| m.timestamp > anchor_ts);
+                } else {
+                    anyhow::bail!("No message found with hash starting '{}'", prefix);
                 }
             }
-        } else if unread_only {
-            if let Some(since) = last_read {
-                messages.retain(|m| m.timestamp > since);
-            }
+        } else if unread_only && let Some(since) = last_read {
+            messages.retain(|m| m.timestamp > since);
         }
 
         if let Some(sender) = from_filter {
@@ -879,21 +877,21 @@ impl CollabClient {
 
         // Singleton guard: prevent multiple stream processes for the same instance.
         let _lock_guard = if let Some(path) = stream_lock_path(&self.instance_id) {
-            if let Ok(contents) = std::fs::read_to_string(&path) {
-                if let Ok(pid) = contents.trim().parse::<u32>() {
-                    #[cfg(unix)]
-                    let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
-                    #[cfg(not(unix))]
-                    let alive = false;
-                    if alive {
-                        anyhow::bail!(
-                            "collab stream is already running for @{} (PID {})\n\
+            if let Ok(contents) = std::fs::read_to_string(&path)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                #[cfg(unix)]
+                let alive = unsafe { libc::kill(pid as i32, 0) == 0 };
+                #[cfg(not(unix))]
+                let alive = false;
+                if alive {
+                    anyhow::bail!(
+                        "collab stream is already running for @{} (PID {})\n\
                              Kill it first:  kill {}",
-                            self.instance_id,
-                            pid,
-                            pid
-                        );
-                    }
+                        self.instance_id,
+                        pid,
+                        pid
+                    );
                 }
             }
             let _ = std::fs::write(&path, std::process::id().to_string());
@@ -973,46 +971,44 @@ impl CollabClient {
                                     let event_str = buffer[..end].to_string();
                                     buffer.drain(..end + 2);
                                     for line in event_str.lines() {
-                                        if let Some(data) = line.strip_prefix("data: ") {
-                                            if let Ok(msg) = serde_json::from_str::<Message>(data) {
-                                                if msg.content.trim() == STOP_WATCH_SIGNAL {
-                                                    println!(
-                                                        "⛔ Stop signal received from @{} — clearing presence and exiting.",
-                                                        msg.sender
-                                                    );
-                                                    let _ = self.delete_presence().await;
-                                                    return Ok(());
-                                                }
-                                                let tag = if msg.recipient == "all" {
-                                                    " [broadcast]"
-                                                } else {
-                                                    ""
-                                                };
-                                                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                                        if let Some(data) = line.strip_prefix("data: ")
+                                            && let Ok(msg) = serde_json::from_str::<Message>(data)
+                                        {
+                                            if msg.content.trim() == STOP_WATCH_SIGNAL {
                                                 println!(
-                                                    "← @{}{}  {}",
-                                                    msg.sender,
-                                                    tag,
-                                                    msg.timestamp.format("%H:%M:%S UTC")
+                                                    "⛔ Stop signal received from @{} — clearing presence and exiting.",
+                                                    msg.sender
                                                 );
-                                                println!("Hash: {}", link_hash(&msg.hash[..7]));
-                                                if !msg.refs.is_empty() {
-                                                    let short_refs: Vec<String> = msg
-                                                        .refs
-                                                        .iter()
-                                                        .map(|r| {
-                                                            link_hash(
-                                                                &r.chars()
-                                                                    .take(7)
-                                                                    .collect::<String>(),
-                                                            )
-                                                        })
-                                                        .collect();
-                                                    println!("Refs: {}", short_refs.join(", "));
-                                                }
-                                                println!("\n{}\n", msg.content);
-                                                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+                                                let _ = self.delete_presence().await;
+                                                return Ok(());
                                             }
+                                            let tag = if msg.recipient == "all" {
+                                                " [broadcast]"
+                                            } else {
+                                                ""
+                                            };
+                                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                                            println!(
+                                                "← @{}{}  {}",
+                                                msg.sender,
+                                                tag,
+                                                msg.timestamp.format("%H:%M:%S UTC")
+                                            );
+                                            println!("Hash: {}", link_hash(&msg.hash[..7]));
+                                            if !msg.refs.is_empty() {
+                                                let short_refs: Vec<String> = msg
+                                                    .refs
+                                                    .iter()
+                                                    .map(|r| {
+                                                        link_hash(
+                                                            &r.chars().take(7).collect::<String>(),
+                                                        )
+                                                    })
+                                                    .collect();
+                                                println!("Refs: {}", short_refs.join(", "));
+                                            }
+                                            println!("\n{}\n", msg.content);
+                                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
                                         }
                                     }
                                 }

@@ -104,10 +104,8 @@ impl PairingTable {
         self.drop_expired(now);
 
         let well_formed = code.len() == CODE_LEN && code.bytes().all(|b| b.is_ascii_digit());
-        if well_formed {
-            if let Some(pending) = self.codes.remove(code) {
-                return Ok(pending.team_id);
-            }
+        if well_formed && let Some(pending) = self.codes.remove(code) {
+            return Ok(pending.team_id);
         }
 
         // A wrong guess. Enough of them and every outstanding code goes,

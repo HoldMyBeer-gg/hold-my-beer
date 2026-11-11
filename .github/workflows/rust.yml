@@ -51,6 +51,20 @@ jobs:
       - name: GUI
         run: cargo fmt --check --manifest-path collab-gui/src-tauri/Cargo.toml
 
+  # Lints for the server and CLI, with every warning treated as an error.
+  # The GUI crate is linted in its own job below, where it can be built.
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   # Builds and tests the server and the CLI on every system they ship for.
   # No system packages are installed: SQLite is bundled and TLS is rustls,
   # so a C compiler is all the build needs.
@@ -99,6 +113,8 @@ jobs:
         run: node collab-gui/src-tauri/stage-sidecars.mjs
       - name: Test
         run: cargo test --locked --manifest-path collab-gui/src-tauri/Cargo.toml
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path collab-gui/src-tauri/Cargo.toml --all-targets -- -D warnings
 
   # The GUI's page, driven in a real browser with Tauri replaced by a stub.
   gui-web:

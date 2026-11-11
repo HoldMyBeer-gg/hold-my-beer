@@ -109,19 +109,19 @@ fn ensure_no_competing_manifest(codebase: &Path, team: &str, worker_name: &str) 
         );
     }
 
-    if let Some(marker) = TeamManagedMarker::read(codebase) {
-        if marker.team != team {
-            anyhow::bail!(
-                "{} is managed by team '{}' (source: {}). \
+    if let Some(marker) = TeamManagedMarker::read(codebase)
+        && marker.team != team
+    {
+        anyhow::bail!(
+            "{} is managed by team '{}' (source: {}). \
                  Worker '{}' can't belong to two teams. Remove the existing marker \
                  (rm {}/.collab/team-managed) if you're deliberately retargeting.",
-                codebase.display(),
-                marker.team,
-                marker.source,
-                worker_name,
-                codebase.display()
-            );
-        }
+            codebase.display(),
+            marker.team,
+            marker.source,
+            worker_name,
+            codebase.display()
+        );
     }
 
     Ok(())
