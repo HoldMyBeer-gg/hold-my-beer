@@ -4,16 +4,10 @@ use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use std::path::PathBuf;
 
-mod client;
-mod home;
-mod init;
-mod join;
-mod join_text;
-mod lifecycle;
-mod team;
-mod team_cli;
-mod team_init;
-mod whoami_text;
+// Everything except the worker loop lives in the library, so tests can reach
+// it. The binary uses those modules instead of compiling a second copy.
+use holdmybeer_cli::{client, home, init, join, lifecycle, team, team_cli, team_init, whoami_text};
+
 mod worker;
 
 use client::CollabClient;
@@ -136,7 +130,7 @@ fn load_dotenv() {
             }
             return;
         }
-        if home.as_ref().map_or(false, |h| &dir == h) {
+        if home.as_ref() == Some(&dir) {
             return;
         }
         if !dir.pop() {
@@ -528,16 +522,16 @@ async fn main() -> Result<()> {
                     // the two paths don't compose and this is how we'd get
                     // duplicate AGENT.md + PID files.
                     let cwd = std::env::current_dir().ok();
-                    if let Some(cwd) = cwd {
-                        if let Some(marker) = team::TeamManagedMarker::read(&cwd) {
-                            anyhow::bail!(
-                                "Refusing to init a workers.yml in a codebase managed by team '{}' \
+                    if let Some(cwd) = cwd
+                        && let Some(marker) = team::TeamManagedMarker::read(&cwd)
+                    {
+                        anyhow::bail!(
+                            "Refusing to init a workers.yml in a codebase managed by team '{}' \
                                  (source: {}). Edit the team manifest and re-run `collab init {}` instead.",
-                                marker.team,
-                                marker.source,
-                                marker.source
-                            );
-                        }
+                            marker.team,
+                            marker.source,
+                            marker.source
+                        );
                     }
                     init::run_from_yaml(&path, output.as_deref())?;
                 }
@@ -1018,9 +1012,8 @@ fn parse_target(target: &str) -> Result<Vec<String>> {
     if target == "all" {
         // Will be expanded using manifest
         Ok(vec!["all".to_string()])
-    } else if target.starts_with('@') {
+    } else if let Some(name) = target.strip_prefix('@') {
         // Single instance
-        let name = &target[1..];
         if name
             .chars()
             .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
@@ -1538,10 +1531,10 @@ async fn dispatch_whoami(server: &str, instance: Option<&str>, token: Option<&st
     if let Some(path) = local_config_path() {
         println!("  local cfg:  {}", path.display());
     }
-    if let Some(path) = config_path() {
-        if path.exists() {
-            println!("  global cfg: {}", path.display());
-        }
+    if let Some(path) = config_path()
+        && path.exists()
+    {
+        println!("  global cfg: {}", path.display());
     }
 
     Ok(())
@@ -1706,19 +1699,19 @@ fn find_governing_manifest(from: &std::path::Path) -> Result<GoverningManifest> 
 /// machine holds a conflicting lease. Falls back to "unknown" if the
 /// platform doesn't expose a hostname cheaply.
 fn hostname_best_effort() -> String {
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.is_empty() {
-            return h;
-        }
+    if let Ok(h) = std::env::var("HOSTNAME")
+        && !h.is_empty()
+    {
+        return h;
     }
     #[cfg(unix)]
     {
-        if let Ok(out) = std::process::Command::new("hostname").output() {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !s.is_empty() {
-                    return s;
-                }
+        if let Ok(out) = std::process::Command::new("hostname").output()
+            && out.status.success()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s;
             }
         }
     }
@@ -1737,22 +1730,23 @@ struct WorkerManifestLookup {
     model: Option<String>,
 }
 
-/// Resolve the worker's manifest bits from whichever source applies.
-/// Team-managed codebases (team.yml) take precedence over legacy
-/// `.collab/workers.json`. Returns empty defaults if neither is found —
-/// the worker still runs, just without teammate awareness (which will
-/// get every delegate caught by the hallucination guard).
-fn resolve_worker_manifest(
-    workdir: &std::path::Path,
-    instance_id: &str,
-) -> (
+/// What [`resolve_worker_manifest`] hands back, in this order: `reports_to`,
+/// `works_with`, `teammates`, then the remaining optional manifest fields.
+type WorkerManifest = (
     Option<String>,
     Vec<String>,
     Vec<(String, String)>,
     Option<String>,
     Option<String>,
     Option<String>,
-) {
+);
+
+/// Resolve the worker's manifest bits from whichever source applies.
+/// Team-managed codebases (team.yml) take precedence over legacy
+/// `.collab/workers.json`. Returns empty defaults if neither is found —
+/// the worker still runs, just without teammate awareness (which will
+/// get every delegate caught by the hallucination guard).
+fn resolve_worker_manifest(workdir: &std::path::Path, instance_id: &str) -> WorkerManifest {
     let lookup = resolve_worker_manifest_inner(workdir, instance_id);
     (
         lookup.reports_to,

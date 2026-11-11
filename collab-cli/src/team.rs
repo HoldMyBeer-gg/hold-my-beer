@@ -100,10 +100,10 @@ pub fn yaml_is_team_config(contents: &str) -> bool {
             continue;
         }
         // Only a key name matters; the value can be anything.
-        if let Some(key) = trimmed.split(':').next() {
-            if key == "team" {
-                return true;
-            }
+        if let Some(key) = trimmed.split(':').next()
+            && key == "team"
+        {
+            return true;
         }
         // Any other non-comment, non-blank line at the top disambiguates —
         // if `workers:` shows up first, we're in legacy mode.
@@ -115,15 +115,15 @@ pub fn yaml_is_team_config(contents: &str) -> bool {
 /// Expand a leading `~` to the user's home directory. Leaves other paths
 /// untouched so absolute and relative paths work as-is.
 pub fn expand_tilde(p: &str) -> PathBuf {
-    if let Some(stripped) = p.strip_prefix("~/") {
-        if let Some(home) = home_dir() {
-            return home.join(stripped);
-        }
+    if let Some(stripped) = p.strip_prefix("~/")
+        && let Some(home) = home_dir()
+    {
+        return home.join(stripped);
     }
-    if p == "~" {
-        if let Some(home) = home_dir() {
-            return home;
-        }
+    if p == "~"
+        && let Some(home) = home_dir()
+    {
+        return home;
     }
     PathBuf::from(p)
 }
@@ -196,10 +196,10 @@ impl TeamConfig {
                     );
                 }
             }
-            if let Some(rt) = &w.reports_to {
-                if !name_pattern_ok(rt) {
-                    anyhow::bail!("worker '{}' has invalid reports_to target '{}'", w.name, rt);
-                }
+            if let Some(rt) = &w.reports_to
+                && !name_pattern_ok(rt)
+            {
+                anyhow::bail!("worker '{}' has invalid reports_to target '{}'", w.name, rt);
             }
             for ww in &w.works_with {
                 if !name_pattern_ok(ww) {

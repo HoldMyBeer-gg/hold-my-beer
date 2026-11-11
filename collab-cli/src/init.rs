@@ -1,10 +1,7 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::fs;
 use std::path::Path;
-
-#[cfg(unix)]
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -155,7 +152,7 @@ fn render_claude_md(
         format!("| Instance | Role |\n|----------|------|\n{}", rows)
     };
 
-    let other = teammates
+    let _other = teammates
         .first()
         .map(|w| w.name.as_str())
         .unwrap_or("teammate");
@@ -349,15 +346,11 @@ fn write_worker_manifest(
             .or(config.model.as_ref())
             .cloned()
             .unwrap_or_default();
-        let codebase_path = config
-            .codebase_path
-            .as_ref()
-            .map(|p| p.clone())
-            .unwrap_or_else(|| {
-                std::env::current_dir()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| ".".to_string())
-            });
+        let codebase_path = config.codebase_path.clone().unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| ".".to_string())
+        });
 
         let cli_tmpl = Some(
             worker

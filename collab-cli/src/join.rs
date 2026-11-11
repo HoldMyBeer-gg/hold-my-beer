@@ -153,13 +153,13 @@ pub fn override_warnings(
 ) -> Vec<String> {
     let server = normalize_server(server);
     let mut out = Vec::new();
-    if let Some(v) = env("COLLAB_SERVER") {
-        if normalize_server(&v) != server {
-            out.push(format!(
-                "COLLAB_SERVER is set to {v} in this shell and overrides the saved address. \
+    if let Some(v) = env("COLLAB_SERVER")
+        && normalize_server(&v) != server
+    {
+        out.push(format!(
+            "COLLAB_SERVER is set to {v} in this shell and overrides the saved address. \
                  Unset it (and remove it from your shell profile) to use {server}."
-            ));
-        }
+        ));
     }
     if env("COLLAB_TOKEN").is_some() {
         out.push(

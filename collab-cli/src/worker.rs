@@ -10,6 +10,10 @@ use tokio::time::{Duration, Instant, sleep};
 
 use crate::client::{CollabApi, CollabClient};
 
+/// Compiled once: the stream loop checks every incoming message against it.
+static PING_RE: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(PING_PATTERN).unwrap());
+
 const PING_PATTERN: &str = r"(?i)^(ping|status|are you there\??|health ?check|you up\??)$";
 /// Matches messages that OPEN with an acknowledgment phrase. Combined with a
 /// length cap (ACK_MAX_LEN), this catches pure receipts like "Acknowledging — standing by"
@@ -192,6 +196,9 @@ pub struct WorkerHarness {
 }
 
 impl WorkerHarness {
+    // One argument per manifest field. Grouping them is a larger change
+    // than this lint is worth.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: CollabClient,
         instance_id: String,
@@ -219,6 +226,9 @@ impl WorkerHarness {
     }
 
     /// Build a harness around any `CollabApi` impl. Used by tests with a fake.
+    // One argument per manifest field. Grouping them is a larger change
+    // than this lint is worth.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_api(
         client: Arc<dyn CollabApi>,
         instance_id: String,
@@ -260,7 +270,8 @@ impl WorkerHarness {
         }
     }
 
-    /// Override the CLI timeout. Returns self for chaining; primarily used by tests.
+    /// Override the CLI timeout. Returns self for chaining. Tests only.
+    #[cfg(test)]
     pub fn with_cli_timeout_secs(mut self, secs: u64) -> Self {
         self.cli_timeout_secs = secs;
         self
@@ -342,10 +353,11 @@ impl WorkerHarness {
 
             let mut replied = std::collections::HashSet::new();
             for msg in messages {
-                if msg.sender != self.instance_id && replied.insert(msg.sender.clone()) {
-                    if let Err(e) = self.client.add_message(&msg.sender, &reply, None).await {
-                        self.log_error(&format!("Failed to reply to @{}: {}", msg.sender, e));
-                    }
+                if msg.sender != self.instance_id
+                    && replied.insert(msg.sender.clone())
+                    && let Err(e) = self.client.add_message(&msg.sender, &reply, None).await
+                {
+                    self.log_error(&format!("Failed to reply to @{}: {}", msg.sender, e));
                 }
             }
             self.log(&format!("harness-handled ping → {}", status));
@@ -392,7 +404,7 @@ impl WorkerHarness {
         let reports_to = self.reports_to.clone();
         let works_with = self.works_with.clone();
         let teammates = self.teammates.clone();
-        let batch_status = current_status.clone();
+        let _batch_status = current_status.clone();
         let cli_timeout_secs = self.cli_timeout_secs;
 
         let max_self_kicks: u32 = 3;
@@ -614,16 +626,17 @@ impl WorkerHarness {
                                         // sender=instance_id, which the batch loop strips
                                         // as a self-message, and the kick would be silently
                                         // eaten.
-                                        if !worker_continued && auto_kicks_so_far < MAX_AUTO_KICKS {
-                                            if let Ok(todos) = harness
+                                        if !worker_continued
+                                            && auto_kicks_so_far < MAX_AUTO_KICKS
+                                            && let Ok(todos) = harness
                                                 .client
                                                 .fetch_todos(&harness.instance_id)
                                                 .await
-                                            {
-                                                if !todos.is_empty() {
-                                                    let mut q = queue.lock().await;
-                                                    if q.is_empty() {
-                                                        q.push(Message {
+                                            && !todos.is_empty()
+                                        {
+                                            let mut q = queue.lock().await;
+                                            if q.is_empty() {
+                                                q.push(Message {
                                                 sender: "system".to_string(),
                                                 recipient: instance_id_for_kick.clone(),
                                                 content: format!(
@@ -633,10 +646,8 @@ impl WorkerHarness {
                                                 hash: String::new(),
                                                 timestamp: Utc::now(),
                                             });
-                                                        *first_time_for_kick.lock().await =
-                                                            Some(Instant::now());
-                                                    }
-                                                }
+                                                *first_time_for_kick.lock().await =
+                                                    Some(Instant::now());
                                             }
                                         }
                                     });
@@ -654,34 +665,31 @@ impl WorkerHarness {
                                     let role_recovery = role_for_monitor.clone();
                                     let hb_recovery = hb_client.clone();
                                     tokio::spawn(async move {
-                                        if let Err(e) = handle.await {
-                                            if e.is_panic() {
-                                                let msg = format!(
-                                                    "[{}] [{}] CLI task panicked — resetting status, cli_lock released",
-                                                    Utc::now().format("%H:%M:%S UTC"),
-                                                    instance_id_for_log
-                                                );
-                                                eprintln!("{msg}");
-                                                // Best-effort append to the worker error
-                                                // log so GUI-launched workers (stderr
-                                                // null'd) leave a trace.
-                                                use std::io::Write;
-                                                if let Ok(mut f) = std::fs::OpenOptions::new()
-                                                    .create(true)
-                                                    .append(true)
-                                                    .open("/tmp/collab-worker-errors.log")
-                                                {
-                                                    let _ =
-                                                        f.write_all(format!("{msg}\n").as_bytes());
-                                                }
-                                                // Unstick presence — status goes back to
-                                                // role so the roster stops lying.
-                                                *status_recovery.lock().await =
-                                                    role_recovery.clone();
-                                                let _ = hb_recovery
-                                                    .heartbeat(Some(&role_recovery))
-                                                    .await;
+                                        if let Err(e) = handle.await
+                                            && e.is_panic()
+                                        {
+                                            let msg = format!(
+                                                "[{}] [{}] CLI task panicked — resetting status, cli_lock released",
+                                                Utc::now().format("%H:%M:%S UTC"),
+                                                instance_id_for_log
+                                            );
+                                            eprintln!("{msg}");
+                                            // Best-effort append to the worker error
+                                            // log so GUI-launched workers (stderr
+                                            // null'd) leave a trace.
+                                            use std::io::Write;
+                                            if let Ok(mut f) = std::fs::OpenOptions::new()
+                                                .create(true)
+                                                .append(true)
+                                                .open("/tmp/collab-worker-errors.log")
+                                            {
+                                                let _ = f.write_all(format!("{msg}\n").as_bytes());
                                             }
+                                            // Unstick presence — status goes back to
+                                            // role so the roster stops lying.
+                                            *status_recovery.lock().await = role_recovery.clone();
+                                            let _ =
+                                                hb_recovery.heartbeat(Some(&role_recovery)).await;
                                         }
                                     });
                                 }
@@ -690,15 +698,15 @@ impl WorkerHarness {
                     }) // end inner batch loop task
                 }; // end handle assignment
 
-                if let Err(e) = handle.await {
-                    if e.is_panic() {
-                        eprintln!(
-                            "[{}] [{}] Batch processor panicked — restarting in 1s",
-                            Utc::now().format("%H:%M:%S UTC"),
-                            watchdog_instance_id
-                        );
-                        sleep(Duration::from_secs(1)).await;
-                    }
+                if let Err(e) = handle.await
+                    && e.is_panic()
+                {
+                    eprintln!(
+                        "[{}] [{}] Batch processor panicked — restarting in 1s",
+                        Utc::now().format("%H:%M:%S UTC"),
+                        watchdog_instance_id
+                    );
+                    sleep(Duration::from_secs(1)).await;
                 }
                 // If handle returned Ok(()), the loop exited normally — restart immediately
             }
@@ -889,22 +897,22 @@ impl WorkerHarness {
                                     buffer.drain(..end + 2);
 
                                     for line in event_str.lines() {
-                                        if let Some(data) = line.strip_prefix("data: ") {
-                                            if let Ok(msg) = serde_json::from_str::<Message>(data) {
-                                                // Pings get answered immediately — never block on queue
-                                                let ping_re = Regex::new(PING_PATTERN).unwrap();
-                                                if ping_re.is_match(msg.content.trim()) {
-                                                    let _ = self.handle_harness_tier(&[msg]).await;
-                                                } else {
-                                                    // Queue the message
-                                                    let mut queue = self.message_queue.lock().await;
-                                                    queue.push(msg);
+                                        if let Some(data) = line.strip_prefix("data: ")
+                                            && let Ok(msg) = serde_json::from_str::<Message>(data)
+                                        {
+                                            // Pings get answered immediately — never block on queue
+                                            let ping_re = &*PING_RE;
+                                            if ping_re.is_match(msg.content.trim()) {
+                                                let _ = self.handle_harness_tier(&[msg]).await;
+                                            } else {
+                                                // Queue the message
+                                                let mut queue = self.message_queue.lock().await;
+                                                queue.push(msg);
 
-                                                    // Record first message time for batching
-                                                    if queue.len() == 1 {
-                                                        *self.first_message_time.lock().await =
-                                                            Some(Instant::now());
-                                                    }
+                                                // Record first message time for batching
+                                                if queue.len() == 1 {
+                                                    *self.first_message_time.lock().await =
+                                                        Some(Instant::now());
                                                 }
                                             }
                                         }
@@ -1388,41 +1396,38 @@ Never send a 'noted'/'understood'/'will do' reply. Either do the work now or sta
             ).unwrap();
             let mention_re = regex::Regex::new(r"@(\w+)").unwrap();
 
-            if collab_output.delegate.is_empty() {
-                if let Some(response) = collab_output.response.as_ref() {
-                    if delegation_claim_re.is_match(response) {
-                        let candidates: Vec<String> = mention_re
-                            .captures_iter(response)
-                            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
-                            .filter(|name| {
-                                known_teammates.contains(name) && name != &self.instance_id
-                            })
-                            .collect::<std::collections::HashSet<_>>()
-                            .into_iter()
-                            .collect();
-                        if candidates.len() == 1 {
-                            let target = candidates.into_iter().next().unwrap();
-                            self.log(&format!(
+            if collab_output.delegate.is_empty()
+                && let Some(response) = collab_output.response.as_ref()
+                && delegation_claim_re.is_match(response)
+            {
+                let candidates: Vec<String> = mention_re
+                    .captures_iter(response)
+                    .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
+                    .filter(|name| known_teammates.contains(name) && name != &self.instance_id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .into_iter()
+                    .collect();
+                if candidates.len() == 1 {
+                    let target = candidates.into_iter().next().unwrap();
+                    self.log(&format!(
                                 "auto-extracting delegation: response claimed delegation with no delegate[] entry; synthesizing @{} with response as task body",
                                 target
                             ));
-                            collab_output.delegate.push(DelegateTask {
-                                to: target,
-                                task: response.clone(),
-                            });
-                        } else {
-                            self.log(&format!(
+                    collab_output.delegate.push(DelegateTask {
+                        to: target,
+                        task: response.clone(),
+                    });
+                } else {
+                    self.log(&format!(
                                 "scrubbing phantom delegation claim from response ({} unambiguous @-mentions of known teammates); the model lied about delegating",
                                 candidates.len()
                             ));
-                            // Replace the response with a truthful note so the
-                            // sender knows the claimed delegation didn't happen
-                            // rather than being told it did.
-                            collab_output.response = Some(
+                    // Replace the response with a truthful note so the
+                    // sender knows the claimed delegation didn't happen
+                    // rather than being told it did.
+                    collab_output.response = Some(
                                 "(worker claimed to delegate but couldn't — no unambiguous target found; please restate what you need)".to_string()
                             );
-                        }
-                    }
                 }
             }
 
@@ -1435,23 +1440,20 @@ Never send a 'noted'/'understood'/'will do' reply. Either do the work now or sta
 
             // Send response once per unique sender (skip self, system, and delegate targets)
             let mut replied: std::collections::HashSet<String> = std::collections::HashSet::new();
-            if let Some(response) = &collab_output.response {
-                if !response.is_empty() {
-                    for msg in messages {
-                        if msg.sender != self.instance_id
-                            && msg.sender != "system"
-                            && !delegated_to.contains(&msg.sender)
-                            && replied.insert(msg.sender.clone())
-                        {
-                            if let Err(e) =
-                                self.client.add_message(&msg.sender, response, None).await
-                            {
-                                self.log_error(&format!(
-                                    "Failed to send response to @{}: {}",
-                                    msg.sender, e
-                                ));
-                            }
-                        }
+            if let Some(response) = &collab_output.response
+                && !response.is_empty()
+            {
+                for msg in messages {
+                    if msg.sender != self.instance_id
+                        && msg.sender != "system"
+                        && !delegated_to.contains(&msg.sender)
+                        && replied.insert(msg.sender.clone())
+                        && let Err(e) = self.client.add_message(&msg.sender, response, None).await
+                    {
+                        self.log_error(&format!(
+                            "Failed to send response to @{}: {}",
+                            msg.sender, e
+                        ));
                     }
                 }
             }
@@ -1562,27 +1564,26 @@ Never send a 'noted'/'understood'/'will do' reply. Either do the work now or sta
             // fanned identical completion messages out to every listed teammate
             // and caused noisy dupes). Workers that legitimately need to notify
             // multiple teammates can populate messages[] / delegate[] explicitly.
-            if actually_completed > 0 {
-                if let Some(target) = self.reports_to.as_ref() {
-                    let to = target.trim_start_matches('@').to_string();
-                    if replied.contains(&to) || delegated_to.contains(&to) || messaged.contains(&to)
-                    {
-                        self.log(&format!(
-                            "skipped pipeline → @{} (already contacted this turn)",
-                            to
-                        ));
+            if actually_completed > 0
+                && let Some(target) = self.reports_to.as_ref()
+            {
+                let to = target.trim_start_matches('@').to_string();
+                if replied.contains(&to) || delegated_to.contains(&to) || messaged.contains(&to) {
+                    self.log(&format!(
+                        "skipped pipeline → @{} (already contacted this turn)",
+                        to
+                    ));
+                } else {
+                    let summary = collab_output
+                        .response
+                        .as_deref()
+                        .unwrap_or("Task completed.");
+                    let handoff_msg =
+                        format!("Completed work from @{}: {}", self.instance_id, summary);
+                    if let Err(e) = self.client.add_message(&to, &handoff_msg, None).await {
+                        self.log_error(&format!("Failed to route to @{}: {}", to, e));
                     } else {
-                        let summary = collab_output
-                            .response
-                            .as_deref()
-                            .unwrap_or("Task completed.");
-                        let handoff_msg =
-                            format!("Completed work from @{}: {}", self.instance_id, summary);
-                        if let Err(e) = self.client.add_message(&to, &handoff_msg, None).await {
-                            self.log_error(&format!("Failed to route to @{}: {}", to, e));
-                        } else {
-                            self.log(&format!("pipeline → @{}", to));
-                        }
+                        self.log(&format!("pipeline → @{}", to));
                     }
                 }
             }
@@ -1630,15 +1631,16 @@ Never send a 'noted'/'understood'/'will do' reply. Either do the work now or sta
                     ));
                 } else {
                     // Plain text response — send it
-                    self.log(&format!("no markers — sending raw response"));
+                    self.log("no markers — sending raw response");
                     for msg in messages {
-                        if msg.sender != self.instance_id && msg.sender != "system" {
-                            if let Err(e) = self.client.add_message(&msg.sender, &raw, None).await {
-                                self.log_error(&format!(
-                                    "Failed to send response to @{}: {}",
-                                    msg.sender, e
-                                ));
-                            }
+                        if msg.sender != self.instance_id
+                            && msg.sender != "system"
+                            && let Err(e) = self.client.add_message(&msg.sender, &raw, None).await
+                        {
+                            self.log_error(&format!(
+                                "Failed to send response to @{}: {}",
+                                msg.sender, e
+                            ));
                         }
                     }
                 }
@@ -1740,10 +1742,10 @@ Never send a 'noted'/'understood'/'will do' reply. Either do the work now or sta
             let path = self.workdir.join(filename);
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 for line in contents.lines() {
-                    if line.contains("Your role:") {
-                        if let Some(rest) = line.split("Your role:").nth(1) {
-                            return rest.trim().trim_end_matches('*').to_string();
-                        }
+                    if line.contains("Your role:")
+                        && let Some(rest) = line.split("Your role:").nth(1)
+                    {
+                        return rest.trim().trim_end_matches('*').to_string();
                     }
                 }
             }
@@ -1848,12 +1850,12 @@ fn parse_collab_output(output: &str) -> Option<CollabOutput> {
             depth += 1;
         } else if bytes[i] == b'{' {
             depth -= 1;
-            if depth == 0 {
-                if let Some(end) = end_pos {
-                    let json_str = &cleaned[i..=end];
-                    if let Ok(parsed) = serde_json::from_str::<CollabOutput>(json_str) {
-                        return Some(parsed);
-                    }
+            if depth == 0
+                && let Some(end) = end_pos
+            {
+                let json_str = &cleaned[i..=end];
+                if let Ok(parsed) = serde_json::from_str::<CollabOutput>(json_str) {
+                    return Some(parsed);
                 }
             }
         }
@@ -2369,18 +2371,6 @@ mod integration {
 
         fn added_todos(&self) -> Vec<(String, String)> {
             self.added_todos.lock().unwrap().clone()
-        }
-
-        fn push_history(&self, sender: &str, recipient: &str, content: &str) {
-            self.history.lock().unwrap().push(crate::client::Message {
-                id: format!("hist-{}", content.len()),
-                hash: format!("h-{}", content.len()),
-                sender: sender.into(),
-                recipient: recipient.into(),
-                content: content.into(),
-                refs: vec![],
-                timestamp: chrono::Utc::now(),
-            });
         }
     }
 

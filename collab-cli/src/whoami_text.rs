@@ -23,12 +23,12 @@ pub fn team_lines(marker: Option<(&str, &str)>, server: &ServerTeam) -> Vec<Stri
         (Some((team, source)), _) => {
             lines.push(format!("  team:       {team}"));
             lines.push(format!("  team.yml:   {source}"));
-            if let ServerTeam::Named(theirs) = server {
-                if theirs != team {
-                    lines.push(format!(
-                        "  warning:    the token is for team '{theirs}', not '{team}'"
-                    ));
-                }
+            if let ServerTeam::Named(theirs) = server
+                && theirs != team
+            {
+                lines.push(format!(
+                    "  warning:    the token is for team '{theirs}', not '{team}'"
+                ));
             }
         }
         (None, ServerTeam::Named(team)) => {

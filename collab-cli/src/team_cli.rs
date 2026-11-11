@@ -8,7 +8,7 @@
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::team::{TeamConfig, TeamManagedMarker, TeamWorker};
 
@@ -118,7 +118,7 @@ pub async fn show(
     if !resp.status().is_success() {
         let status = resp.status();
         if status.as_u16() == 403 {
-            let hint = if admin_token.map_or(false, |t| t.starts_with("tm_")) {
+            let hint = if admin_token.is_some_and(|t| t.starts_with("tm_")) {
                 "Your COLLAB_TOKEN looks like a team token (tm_…), but `collab team show` needs an admin token. \
                  Set COLLAB_ADMIN_TOKEN (adm_…) to the admin secret and retry."
             } else {
