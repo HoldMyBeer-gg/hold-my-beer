@@ -22,9 +22,9 @@ pkill -f "tauri dev" 2>/dev/null || true
 # Short pause to let ports release
 sleep 1
 
-# Build collab + collab-server and stage them as sidecars next to the GUI
-# binary. Tauri's externalBin machinery expects them at
-# src-tauri/binaries/<name>-<host-triple>.
-PROFILE=debug ./src-tauri/stage-sidecars.sh
+# `pnpm dev` runs `tauri dev`, whose beforeDevCommand builds collab and
+# collab-server and stages them as sidecars (src-tauri/stage-sidecars.mjs).
+# Ask it for debug builds, which are much quicker than the default release.
+export PROFILE=debug
 
 exec pnpm dev
