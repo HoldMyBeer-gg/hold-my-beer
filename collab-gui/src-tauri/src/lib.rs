@@ -1,6 +1,13 @@
 pub mod commands;
 pub mod workers;
 
+// Shared with the collab CLI so both write ~/.collab.toml the same way. The
+// file is plain text handling with no dependencies, so it is included as
+// source instead of pulling the whole CLI crate into the app.
+#[allow(dead_code)]
+#[path = "../../../collab-cli/src/join_text.rs"]
+mod join_text;
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;

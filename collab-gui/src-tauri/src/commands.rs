@@ -85,23 +85,34 @@ pub fn save_config(config: SavedConfig) -> Result<(), String> {
         std::fs::write(&path, json).map_err(|e| e.to_string())?;
     }
 
-    // Also write ~/.collab.toml so the collab CLI picks up token + host.
-    // The admin token is written as a comment so users can see it exists,
-    // but the CLI reads admin tokens from COLLAB_ADMIN_TOKEN env only (we
-    // don't want two admin secrets auto-loading if someone has a legacy
-    // token in ~/.collab.toml).
+    // Also put the server and token in ~/.collab.toml so the collab CLI picks
+    // them up. Only those two settings are touched: `instance`, `recipients`
+    // and anything else already in the file stay as they are.
+    //
+    // The admin token goes in as a comment so users can see it exists, but
+    // the CLI reads admin tokens from COLLAB_ADMIN_TOKEN env only (we don't
+    // want two admin secrets auto-loading if someone has a legacy token in
+    // ~/.collab.toml).
     if let Some(toml_path) = collab_toml_path() {
-        let mut toml = format!(
-            "host = \"{}\"\ntoken = \"{}\"\n",
-            config.server_url, config.token
+        let existing = match std::fs::read_to_string(&toml_path) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            // Unreadable is not the same as empty: writing now would lose it.
+            Err(e) => return Err(format!("could not read {}: {e}", toml_path.display())),
+        };
+        let toml = crate::join_text::merge_app_config(
+            &existing,
+            &config.server_url,
+            &config.token,
+            &config.admin_token,
         );
-        if !config.admin_token.is_empty() {
-            toml.push_str(&format!(
-                "# admin_token = \"{}\"  # set COLLAB_ADMIN_TOKEN in your shell to use\n",
-                config.admin_token
-            ));
+        std::fs::write(&toml_path, toml).map_err(|e| e.to_string())?;
+        // The file holds the team token: keep it to this user.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&toml_path, std::fs::Permissions::from_mode(0o600));
         }
-        std::fs::write(toml_path, toml).map_err(|e| e.to_string())?;
     }
 
     Ok(())
