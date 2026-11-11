@@ -313,7 +313,14 @@ async fn auth_middleware(
 
     // Legacy env-token path.
     if let Some(expected) = state.token.as_ref() {
-        if provided.as_deref() == Some(expected.as_str()) {
+        // Compare digests, not the tokens themselves. A plain string
+        // comparison stops at the first wrong character, so its timing
+        // says how much of a guess was right. A digest gives nothing
+        // useful away: a matching digest prefix says nothing of the token.
+        let matches = provided
+            .as_deref()
+            .is_some_and(|p| hash_token(p) == hash_token(expected));
+        if matches {
             request.extensions_mut().insert(AuthContext::legacy());
             return next.run(request).await;
         }
