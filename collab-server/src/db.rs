@@ -279,13 +279,26 @@ async fn apply_team_schema(pool: &SqlitePool) -> Result<()> {
 /// Add a column to an existing table if it isn't already there. SQLite's
 /// `ALTER TABLE ADD COLUMN` fails if the column exists, so we probe first
 /// via `PRAGMA table_info`.
+///
+/// SQL identifiers cannot be bound as parameters, so these two statements
+/// are assembled as text. That is safe only because nothing a caller or a
+/// user controls can reach them: every argument is `&'static str`, so only
+/// text written in this source file compiles, and each is checked against
+/// [`is_plain_sql`] as well. That is the audit sqlx asks for with
+/// `AssertSqlSafe`.
 async fn add_column_if_missing(
     pool: &SqlitePool,
-    table: &str,
-    column: &str,
-    ty_and_default: &str,
+    table: &'static str,
+    column: &'static str,
+    ty_and_default: &'static str,
 ) -> Result<()> {
-    let rows = sqlx::query(&format!("PRAGMA table_info({})", table))
+    for part in [table, column, ty_and_default] {
+        if !is_plain_sql(part) {
+            anyhow::bail!("refusing to build a migration from {part:?}");
+        }
+    }
+
+    let rows = sqlx::query(sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")))
         .fetch_all(pool)
         .await?;
     let has_column = rows.iter().any(|r| {
@@ -293,14 +306,24 @@ async fn add_column_if_missing(
         name == column
     });
     if !has_column {
-        sqlx::query(&format!(
-            "ALTER TABLE {} ADD COLUMN {} {}",
-            table, column, ty_and_default
-        ))
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {ty_and_default}"
+        )))
         .execute(pool)
         .await?;
     }
     Ok(())
+}
+
+/// True for text that can only be a name, a type or a simple default:
+/// letters, digits, underscores and single spaces. No quotes, semicolons,
+/// parentheses or comment markers, so it cannot end one statement and
+/// start another.
+fn is_plain_sql(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ' ')
 }
 
 pub async fn init_test_db() -> Result<SqlitePool> {
@@ -457,8 +480,9 @@ mod tests {
         let pool = init_test_db().await.unwrap();
 
         for table in ["messages", "presence", "todos"] {
+            // Test-only: the table names are the three literals above.
             let col_check = format!("SELECT team_id FROM {} LIMIT 0", table);
-            sqlx::query(&col_check)
+            sqlx::query(sqlx::AssertSqlSafe(col_check))
                 .fetch_optional(&pool)
                 .await
                 .unwrap_or_else(|e| panic!("team_id column missing on {}: {}", table, e));
@@ -494,5 +518,56 @@ mod tests {
             .bind("solo").bind(2).bind("hostY").bind(now).bind(now)
             .execute(&pool).await;
         assert!(legacy_dup.is_err(), "duplicate legacy (NULL team_id) lease must be rejected");
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+
+    #[test]
+    fn plain_sql_accepts_what_the_migrations_use() {
+        for ok in ["team_usage_totals", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0", "TEXT"] {
+            assert!(is_plain_sql(ok), "{ok}");
+        }
+    }
+
+    #[test]
+    fn plain_sql_rejects_anything_that_could_start_another_statement() {
+        for bad in [
+            "",
+            "x; DROP TABLE teams",
+            "x) ; --",
+            "name' OR '1'='1",
+            "a\"b",
+            "a-- comment",
+            "a/*c*/",
+            "TEXT DEFAULT (randomblob(8))",
+            "x\ny",
+        ] {
+            assert!(!is_plain_sql(bad), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn adding_a_column_twice_is_harmless() {
+        let pool = init_test_db().await.unwrap();
+        add_column_if_missing(&pool, "teams", "probe_col", "TEXT").await.unwrap();
+        add_column_if_missing(&pool, "teams", "probe_col", "TEXT").await.unwrap();
+
+        let rows = sqlx::query("PRAGMA table_info(teams)").fetch_all(&pool).await.unwrap();
+        let hits = rows.iter().filter(|r| r.get::<String, _>("name") == "probe_col").count();
+        assert_eq!(hits, 1);
+    }
+
+    #[tokio::test]
+    async fn a_migration_built_from_hostile_text_is_refused() {
+        let pool = init_test_db().await.unwrap();
+        let err = add_column_if_missing(&pool, "teams", "x TEXT; DROP TABLE teams; --", "TEXT")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("refusing"), "{err}");
+        // The table is still there.
+        sqlx::query("SELECT COUNT(*) FROM teams").fetch_one(&pool).await.unwrap();
     }
 }
