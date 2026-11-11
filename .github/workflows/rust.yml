@@ -115,3 +115,4 @@ jobs:
           tests/join-team.spec.mjs
           tests/a11y-labels.spec.mjs
           tests/launch-server-failures.spec.mjs
+          tests/dashboard-catch-up.spec.mjs

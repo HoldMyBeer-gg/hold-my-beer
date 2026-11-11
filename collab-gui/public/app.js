@@ -1297,6 +1297,56 @@ function teardownDashboard() {
 // ── SSE connection ────────────────────────────────────────────────────────────
 // Uses fetch + ReadableStream instead of EventSource so the bearer token is
 // sent in an Authorization header rather than as a URL query parameter.
+// ── Catching up ───────────────────────────────────────────────────────────────
+// The live stream starts at "now". Anything sent while the app was closed,
+// asleep, or suspended behind other windows is on the server and has to be
+// asked for. This loads the recent messages that involve this person, plus
+// the ones addressed to everyone, and merges them into the feed.
+async function loadRecentHistory() {
+  if (!cfg.identity || !cfg.token) return;
+  const base = cfg.serverUrl.replace(/\/+$/, '');
+  const me = cfg.identity.replace(/^@/, '');
+  const lists = await Promise.all([me, 'all'].map(async (name) => {
+    try {
+      const res = await fetch(`${base}/history/${encodeURIComponent(name)}`, {
+        headers: { Authorization: `Bearer ${cfg.token}` },
+        signal: AbortSignal.timeout(8000),
+      });
+      return res.ok ? await res.json() : [];
+    } catch (_) {
+      return []; // unreachable for a moment: keep what is on screen
+    }
+  }));
+
+  const known = new Set(allMessages.map(m => m.id));
+  let added = 0;
+  for (const msg of lists.flat()) {
+    if (!msg || msg.id == null || known.has(msg.id)) continue;
+    known.add(msg.id);
+    allMessages.push(msg);
+    added++;
+  }
+  if (!added) return;
+
+  // History can be older than what the stream already delivered.
+  allMessages.sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)));
+  rerenderFeed();
+  const countEl = document.getElementById('msg-count');
+  if (countEl) countEl.textContent = `${allMessages.length} msg${allMessages.length !== 1 ? 's' : ''}`;
+}
+
+// The window is in view again. A covered or minimised window may have had
+// its timers and its stream suspended by the system, so do at once what the
+// timers would have done: say we are here, refresh who else is, and fetch
+// what was missed.
+function onDashboardShown() {
+  if (!dashboardActive || document.hidden) return;
+  sendPresence();
+  fetchRoster();
+  fetchTodos();
+  loadRecentHistory();
+}
+
 async function connectSSE() {
   if (sseConn) { sseConn.abort(); sseConn = null; }
 
@@ -1311,6 +1361,9 @@ async function connectSSE() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     sseRetries = 0;
     setConnStatus(true);
+    // The stream only carries what is sent from now on. Fetch what was sent
+    // while this page was not listening.
+    loadRecentHistory();
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -2386,23 +2439,27 @@ async function stopWorker(instanceId) {
 }
 
 // ── Presence heartbeat ────────────────────────────────────────────────────────
-async function registerPresence() {
+// Tell the server this person is here. Failures are ignored: the next beat
+// tries again.
+async function sendPresence() {
   if (!cfg.identity) return;
   const identity = cfg.identity.replace(/^@/, '');
-  async function heartbeat() {
-    try {
-      await fetch(`${cfg.serverUrl}/presence/${identity}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization:  `Bearer ${cfg.token}`,
-        },
-        body: JSON.stringify({ role: 'GUI observer' }),
-      });
-    } catch (_) {}
-  }
-  heartbeat();
-  presenceTimer = setInterval(heartbeat, 30_000);
+  try {
+    await fetch(`${cfg.serverUrl}/presence/${identity}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization:  `Bearer ${cfg.token}`,
+      },
+      body: JSON.stringify({ role: 'GUI observer' }),
+    });
+  } catch (_) {}
+}
+
+async function registerPresence() {
+  if (!cfg.identity) return;
+  sendPresence();
+  presenceTimer = setInterval(sendPresence, 30_000);
 }
 
 // ── Panel toggles ─────────────────────────────────────────────────────────────
@@ -2691,6 +2748,18 @@ window.__wizard = {
   on('btn-toggle-usage',  'click', toggleUsage);
   on('btn-toggle-todos',  'click', toggleTodos);
   on('btn-to-wizard',     'click', goToWizard);
+
+  // Catch up whenever the window comes back into view or regains focus.
+  document.addEventListener('visibilitychange', onDashboardShown);
+  window.addEventListener('focus', onDashboardShown);
+
+  // Hold a lock for the life of the page. Webviews that throttle background
+  // pages (WebView2, WebKitGTK) leave a page that holds one alone, which
+  // keeps the stream and the timers running while the window is covered.
+  // macOS is handled by `backgroundThrottling` in tauri.conf.json.
+  if (navigator.locks && navigator.locks.request) {
+    navigator.locks.request('hold-my-beer-dashboard', () => new Promise(() => {})).catch(() => {});
+  }
   on('btn-add-machine',   'click', openPairPanel);
   on('btn-pair-new',      'click', requestPairingCode);
   on('btn-pair-close',    'click', closePairPanel);
