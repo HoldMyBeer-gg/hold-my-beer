@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 mod client;
 mod home;
+mod join;
+mod join_text;
 mod init;
 mod worker;
 mod lifecycle;
@@ -46,14 +48,19 @@ fn read_config(path: &PathBuf) -> Option<Config> {
 fn local_config_path() -> Option<PathBuf> {
     let home = home_dir()?;
     let mut dir = std::env::current_dir().ok()?;
+    // The real home directory too: with COLLAB_HOME pointing elsewhere, a
+    // ~/.collab.toml left over from another setup must not pose as a local
+    // override for everything run beneath the home directory.
+    let platform_home = home::platform_home();
     loop {
+        // A home directory's .collab.toml is the global config, never a
+        // local one. Checked before looking, or the walk finds it first.
+        if dir == home || platform_home.as_ref() == Some(&dir) {
+            return None;
+        }
         let candidate = dir.join(".collab.toml");
         if candidate.exists() {
             return Some(candidate);
-        }
-        // Don't read the global ~/.collab.toml as a local config
-        if dir == home {
-            return None;
         }
         if !dir.pop() {
             return None;
@@ -369,6 +376,20 @@ enum Commands {
         action: RoleAction,
     },
 
+    /// Join an existing team with a six-digit pairing code. Get the code
+    /// by running `collab pair` on a machine that is already in the team,
+    /// or from "Add a machine" in the app.
+    Join {
+        /// The team server's address, for example http://raspi:8000
+        address: String,
+        /// The six-digit code; spaces are fine ("482 913")
+        #[arg(num_args = 1..=2)]
+        code: Vec<String>,
+    },
+
+    /// Print a pairing code that lets one more machine join this team
+    Pair,
+
     /// Show who you are to collab: instance, team, server, token fingerprint,
     /// lease status, codebase path, loaded config files. The first command
     /// every worker should run at cold start.
@@ -466,6 +487,16 @@ async fn main() -> Result<()> {
         .or(file_config.instance.clone());
 
     let token = std::env::var("COLLAB_TOKEN").ok().or(file_config.token.clone());
+
+    // Joining and pairing come first: a machine that is not in a team yet
+    // has no instance name or token, which most other commands insist on.
+    if let Commands::Join { address, code } = cli.command {
+        let local = local_config_path();
+        return join::run_join(&address, &code.join(""), instance.as_deref(), local.as_deref()).await;
+    }
+    if matches!(cli.command, Commands::Pair) {
+        return join::run_pair(&server, token.as_deref()).await;
+    }
 
     if let Commands::Init { file, output } = cli.command {
         match file {

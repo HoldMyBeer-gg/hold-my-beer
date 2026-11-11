@@ -5,6 +5,8 @@
 
 pub mod client;
 pub mod home;
+pub mod join;
+pub mod join_text;
 pub mod init;
 pub mod lifecycle;
 pub mod team;
