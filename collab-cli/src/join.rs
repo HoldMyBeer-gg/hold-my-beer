@@ -241,3 +241,33 @@ pub async fn run_pair(server: &str, token: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
+
+/// Ask the server which team `token` belongs to, for `collab whoami`. Never
+/// fails: anything short of a clear answer is `Unknown`, so the caller can
+/// still print everything else it knows.
+pub async fn team_of_token(server: &str, token: Option<&str>) -> crate::whoami_text::ServerTeam {
+    use crate::whoami_text::ServerTeam;
+    let Some(token) = token else {
+        return ServerTeam::Unknown;
+    };
+    let server = normalize_server(server);
+    let Ok(resp) = http()
+        .get(format!("{server}/team"))
+        .header("Authorization", format!("Bearer {token}"))
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    else {
+        return ServerTeam::Unknown;
+    };
+    let ok = resp.status().is_success();
+    // A server from before /team answers 404 with no JSON.
+    let Ok(body) = resp.json::<serde_json::Value>().await else {
+        return ServerTeam::Unknown;
+    };
+    match (ok, body["name"].as_str(), body["error"].as_str()) {
+        (true, Some(name), _) => ServerTeam::Named(name.to_string()),
+        (false, _, Some("no_team")) => ServerTeam::NoTeam,
+        _ => ServerTeam::Unknown,
+    }
+}

@@ -355,6 +355,7 @@ pub fn create_app(state: AppState) -> Router {
         .route("/admin/teams/:team_id/tokens", post(mint_team_token))
         .route("/admin/teams/:team_id/tokens/:token_prefix", delete(revoke_team_token))
         .route("/pair/codes", post(create_pairing_code))
+        .route("/team", get(current_team))
         .layer(TimeoutLayer::with_status_code(http::StatusCode::REQUEST_TIMEOUT, StdDuration::from_secs(30)));
 
     // SSE routes — no timeout, connections stay open indefinitely
@@ -1240,6 +1241,34 @@ fn random_u32() -> u32 {
     // Bytes 0..4 are fully random in a v4 UUID (the fixed version and
     // variant bits live in bytes 6 and 8).
     u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// Which team the caller's token belongs to. A machine that joined with a
+/// pairing code has a token and nothing else that names its team, so this is
+/// how `collab whoami` and the desktop app find out.
+async fn current_team(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, Response> {
+    let no_team = || {
+        let body = serde_json::json!({
+            "error": "no_team",
+            "message": "This token does not belong to a team."
+        });
+        (StatusCode::NOT_FOUND, Json(body)).into_response()
+    };
+    let Some(team_id) = auth.team_id.as_deref() else {
+        return Err(no_team());
+    };
+    let name: Option<String> = sqlx::query_scalar("SELECT name FROM teams WHERE id = ?")
+        .bind(team_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())?;
+    match name {
+        Some(name) => Ok(Json(serde_json::json!({ "team_id": team_id, "name": name })).into_response()),
+        None => Err(no_team()),
+    }
 }
 
 /// A member of a team asks for a code that lets one more machine join it.
@@ -2837,6 +2866,50 @@ mod pairing_http_tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         json(resp).await["code"].as_str().unwrap().to_string()
+    }
+
+    fn get(uri: &str, bearer: Option<&str>) -> HttpRequest<Body> {
+        let mut b = HttpRequest::builder().method("GET").uri(uri);
+        if let Some(t) = bearer {
+            b = b.header("Authorization", format!("Bearer {t}"));
+        }
+        b.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_member_can_ask_which_team_its_token_is_for() {
+        let (app, db) = locked_server_with_team("team-id-1", "tm_member").await;
+        sqlx::query("UPDATE teams SET name = 'crabs' WHERE id = 'team-id-1'")
+            .execute(&db).await.unwrap();
+
+        let resp = app.oneshot(get("/team", Some("tm_member"))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json(resp).await;
+        assert_eq!(body["name"], "crabs");
+        assert_eq!(body["team_id"], "team-id-1");
+    }
+
+    #[tokio::test]
+    async fn the_team_question_needs_a_valid_token() {
+        let (app, _db) = locked_server_with_team("team-a", "tm_member").await;
+
+        let none = app.clone().oneshot(get("/team", None)).await.unwrap();
+        assert_eq!(none.status(), StatusCode::UNAUTHORIZED);
+
+        let wrong = app.oneshot(get("/team", Some("tm_guess"))).await.unwrap();
+        assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_admin_token_belongs_to_no_team() {
+        let (app, _db) = locked_server_with_team("team-a", "tm_member").await;
+
+        let resp = app.oneshot(get("/team", Some(ADMIN))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let body = json(resp).await;
+        assert_eq!(body["error"], "no_team");
+        // Nothing about the teams that do exist.
+        assert!(!body.to_string().contains("team-a"), "{body}");
     }
 
     #[tokio::test]

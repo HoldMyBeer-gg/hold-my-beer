@@ -10,6 +10,7 @@ use std::time::Instant;
 use collab_server::{create_app, db, AppState, BroadcastMsg};
 use holdmybeer_cli::client::CollabClient;
 use holdmybeer_cli::join;
+use holdmybeer_cli::whoami_text::ServerTeam;
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 
@@ -96,6 +97,36 @@ async fn a_member_pairs_and_a_new_machine_joins() {
         "{saved}"
     );
     assert!(saved.contains("team = \"crabs\""), "{saved}");
+}
+
+// `collab whoami` on a joined machine used to say `team: <legacy>`, because
+// the only place it looked was a team.yml marker that such a machine never
+// has. The server knows which team the token is for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_joined_machine_can_learn_its_team_from_the_server() {
+    let server = start_server_in_process().await;
+    let member_token = admin_create_team(&server, "crabs").await;
+    let pair = join::request_code(&server, &member_token).await.unwrap();
+    let joined = join::redeem(&server, &pair.code).await.unwrap();
+
+    assert_eq!(
+        join::team_of_token(&server, Some(&joined.token)).await,
+        ServerTeam::Named("crabs".to_string())
+    );
+    assert_eq!(
+        join::team_of_token(&server, Some(ADMIN_TOKEN)).await,
+        ServerTeam::NoTeam
+    );
+    // Nothing clear to go on is "unknown", never an error.
+    assert_eq!(
+        join::team_of_token(&server, Some("tm_wrong")).await,
+        ServerTeam::Unknown
+    );
+    assert_eq!(join::team_of_token(&server, None).await, ServerTeam::Unknown);
+    assert_eq!(
+        join::team_of_token("http://127.0.0.1:1", Some(&joined.token)).await,
+        ServerTeam::Unknown
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
