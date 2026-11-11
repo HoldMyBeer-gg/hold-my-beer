@@ -279,10 +279,7 @@ impl TeamConfig {
             }
             let mut path: Vec<String> = vec![start.name.clone()];
             let mut cur = start.name.as_str();
-            loop {
-                let Some(node) = cfg.workers.iter().find(|x| x.name == cur) else {
-                    break;
-                };
+            while let Some(node) = cfg.workers.iter().find(|x| x.name == cur) {
                 let Some(next) = node.reports_to.as_deref() else {
                     break;
                 };
