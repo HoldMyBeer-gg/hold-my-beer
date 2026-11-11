@@ -698,9 +698,10 @@ impl WorkerHarness {
                     }) // end inner batch loop task
                 }; // end handle assignment
 
-                if let Err(e) = handle.await
-                    && e.is_panic()
-                {
+                // The batch task loops forever, so it can only come back as
+                // an error: it panicked or was cancelled.
+                let Err(e) = handle.await;
+                if e.is_panic() {
                     eprintln!(
                         "[{}] [{}] Batch processor panicked — restarting in 1s",
                         Utc::now().format("%H:%M:%S UTC"),
@@ -708,7 +709,7 @@ impl WorkerHarness {
                     );
                     sleep(Duration::from_secs(1)).await;
                 }
-                // If handle returned Ok(()), the loop exited normally — restart immediately
+                // Anything else: restart immediately.
             }
         }); // end watchdog
 
