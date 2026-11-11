@@ -1071,6 +1071,16 @@ async fn lifecycle_stop(target: &str, server: &str, token: Option<&str>) -> Resu
         if let Some(worker_state) = state.remove(name) {
             lifecycle::kill_process(worker_state.pid, name)?;
             lifecycle::remove_worker_pid(&pids_file, name)?;
+            // The process is gone; make the server forget it too, or
+            // `collab start` right after this is refused for 30 seconds.
+            if let Err(e) =
+                lifecycle::release_on_server(server, name, worker_state.pid, token).await
+            {
+                eprintln!(
+                    "  (could not tell the server that @{} stopped: {}. It will notice within 30 seconds.)",
+                    name, e
+                );
+            }
         }
     }
 
