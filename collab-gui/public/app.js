@@ -21,6 +21,9 @@ let cfg = {
   identity:      'human',
   projectDir:    '',
   setupComplete: false,
+  // true when this machine joined a team whose server runs elsewhere: no
+  // local server, no project folder, no workers. See joinExistingTeam.
+  joinOnly:      false,
   cliTemplate:   'claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit',
   model:         'haiku',
 };
@@ -77,47 +80,78 @@ const CLI_TEMPLATES = {
     appendServerLog(p.line, p.stream === 'err');
   });
 
+  if (cfg.setupComplete && cfg.token && cfg.joinOnly) {
+    // This machine joined a team that runs elsewhere. Nothing to start
+    // here: confirm the token still works, then show the dashboard.
+    const status = await probeTeamToken(cfg.serverUrl, cfg.token);
+    if (status === 'rejected') {
+      prefillWizard();
+      showStep1Error(
+        `The server at ${cfg.serverUrl} no longer accepts this machine's token. ` +
+        `Paste the team's current token to rejoin.`
+      );
+      return;
+    }
+    // Unreachable is not a reason to forget the team: the dashboard shows
+    // the connection as down and keeps retrying.
+    revealDashboard();
+    showDashboard();
+    return;
+  }
+
   // teamName is required by the new schema — treat its absence as "config
   // was saved by a pre-team version of the wizard" and drop back into Step 1
   // so the human can mint a team token instead of auto-booting into a
   // dashboard the backend no longer understands.
   if (cfg.setupComplete && cfg.token && cfg.teamName) {
-    // Already set up — hide wizard, show dashboard, and restart the server.
-    const wiz  = document.getElementById('wizard');
-    const dash = document.getElementById('dashboard');
-    wiz.hidden = true;
-    dash.hidden = false;
-    requestAnimationFrame(() => dash.classList.add('visible'));
-    dashboardActive = true;
+    // Already set up — hide wizard, show dashboard, and make sure the
+    // server is up.
+    revealDashboard();
 
     // Register the session FIRST so the Cmd+Q / close-window handler will
     // warn about still-running workers even if start_server below races
     // or errors out.
     try { await invoke('mark_session_active', { projectDir: cfg.projectDir }); } catch {}
 
-    // Start server and wait for it to accept connections before verifying
-    // the token. Without this the token probe races against the bind and
-    // always loses, leaving the GUI stuck on "connecting…".
+    // If a server already answers at the saved address, use it. Starting a
+    // second one would fight it for the port. Only an address on this
+    // machine is ever started from here.
     const adminToken = generateHexToken(32);
-    try {
-      await invoke('start_server', {
-        serverUrl:  cfg.serverUrl,
-        adminToken,
-        projectDir: cfg.projectDir,
-      });
-    } catch (e) { toast('Server error: ' + e, true); }
+    let startedHere = false;
+    if (await serverAnswers(cfg.serverUrl, cfg.token)) {
+      // Nothing to start.
+    } else if (isLocalServerUrl(cfg.serverUrl)) {
+      try {
+        await invoke('start_server', {
+          serverUrl:  cfg.serverUrl,
+          adminToken,
+          projectDir: cfg.projectDir,
+        });
+        startedHere = true;
+      } catch (e) { toast('Server error: ' + e, true); }
+      // Wait for it to accept connections before verifying the token.
+      // Without this the token probe races against the bind and always
+      // loses, leaving the GUI stuck on "connecting…".
+      await waitForServer(cfg.serverUrl, adminToken);
+    } else {
+      toast(`Can't reach ${cfg.serverUrl}. Still trying.`, true);
+    }
 
-    // Poll until the server is accepting HTTP, then verify the saved
-    // team token. If the DB was recreated (git clean, re-clone, etc.)
-    // the token won't exist and everything 401s — re-mint it.
-    await waitForServer(cfg.serverUrl, adminToken);
+    // Verify the saved team token. If the DB was recreated (git clean,
+    // re-clone, etc.) the token won't exist and everything 401s. We can
+    // only re-mint against a server we started, because only then do we
+    // hold its admin token.
     const tokenOk = await verifyToken(cfg.serverUrl, cfg.token);
     if (!tokenOk) {
-      try {
-        cfg.token = await mintTeamTokenDuringLaunch(adminToken);
-        await invoke('save_config', { config: cfg });
-      } catch (e) {
-        toast('Could not re-mint team token: ' + (e.message || e), true);
+      if (startedHere) {
+        try {
+          cfg.token = await mintTeamTokenDuringLaunch(adminToken);
+          await invoke('save_config', { config: cfg });
+        } catch (e) {
+          toast('Could not re-mint team token: ' + (e.message || e), true);
+        }
+      } else {
+        toast(`The server at ${cfg.serverUrl} rejected the saved team token. Open Setup to enter the current one.`, true);
       }
     }
 
@@ -132,6 +166,17 @@ const CLI_TEMPLATES = {
   }
 })();
 
+// Swap the wizard for the dashboard without the wizard's exit animation.
+// Used when the app opens already set up.
+function revealDashboard() {
+  const wiz  = document.getElementById('wizard');
+  const dash = document.getElementById('dashboard');
+  wiz.hidden = true;
+  dash.hidden = false;
+  requestAnimationFrame(() => dash.classList.add('visible'));
+  dashboardActive = true;
+}
+
 // ── Wizard helpers ────────────────────────────────────────────────────────────
 function prefillWizard() {
   if (cfg.token)       document.getElementById('s1-token').value       = cfg.token;
@@ -139,7 +184,153 @@ function prefillWizard() {
   if (cfg.serverUrl)   document.getElementById('s1-url').value         = cfg.serverUrl;
   if (cfg.identity)    document.getElementById('s1-identity').value    = cfg.identity;
   if (cfg.projectDir)  document.getElementById('s2-dir').value         = cfg.projectDir;
+  setWizardMode(cfg.joinOnly ? 'join' : 'new');
   renderWorkerCards();
+}
+
+// ── Step 1 mode: start a new team, or join one that runs elsewhere ────────────
+function wizardMode() {
+  const join = document.getElementById('s1-mode-join');
+  return join && join.checked ? 'join' : 'new';
+}
+
+// Show only the fields the chosen mode needs. Joining needs the server's
+// address, a name and the team token; the team name, the Generate button
+// and every later wizard step belong to starting a new team.
+function setWizardMode(mode) {
+  const join = mode === 'join';
+  const radio = document.getElementById(join ? 's1-mode-join' : 's1-mode-new');
+  if (radio) radio.checked = true;
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !visible;
+  };
+  show('s1-team-field', !join);
+  show('btn-generate-team-token', !join);
+  show('s1-token-optional', !join);
+  show('s1-token-hint-new', !join);
+  show('s1-token-hint-join', join);
+  show('s1-url-hint-join', join);
+  const next = document.getElementById('btn-step1-next');
+  if (next) next.textContent = join ? 'Join team' : 'Next →';
+  clearStep1Error();
+}
+
+// Step 1 problems stay on screen next to the fields. A toast is gone before
+// someone joining from a second machine has finished reading it.
+function showStep1Error(msg) {
+  const el = document.getElementById('s1-error');
+  if (!el) { toast(msg, true); return; }
+  el.textContent = msg;
+  el.hidden = false;
+}
+
+function clearStep1Error() {
+  const el = document.getElementById('s1-error');
+  if (el) { el.textContent = ''; el.hidden = true; }
+}
+
+// True when `url` points at this machine. The GUI only ever starts a server
+// for such an address. For anything else, "no answer" means the other
+// machine is down or unreachable, and starting a server here would leave
+// two machines each believing they host the team.
+function isLocalServerUrl(url) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); } catch (_) { return false; }
+  host = host.replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host === '::1' || host === '0.0.0.0' ||
+    /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+// Does anything answer at the server address? Any HTTP status counts.
+async function serverAnswers(serverUrl, bearer) {
+  try {
+    await fetch(serverUrl.replace(/\/+$/, '') + '/', {
+      headers: { Authorization: `Bearer ${bearer}` },
+      signal: AbortSignal.timeout(2500),
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Ask the server whether it accepts a team token, using the team's roster
+// (any member may read it). Returns 'ok', 'rejected', 'unreachable', or
+// 'unexpected:<status>' when something answers that isn't a team server.
+async function probeTeamToken(serverUrl, token) {
+  let res;
+  try {
+    res = await fetch(serverUrl.replace(/\/+$/, '') + '/roster', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (_) {
+    return 'unreachable';
+  }
+  if (res.ok) return 'ok';
+  if (res.status === 401 || res.status === 403) return 'rejected';
+  return 'unexpected:' + res.status;
+}
+
+// Join a team whose server runs on another machine. No server is started,
+// no project folder or workers are set up, and nothing is written except
+// this machine's own config.
+async function joinExistingTeam() {
+  clearStep1Error();
+  const url      = document.getElementById('s1-url').value.trim().replace(/\/+$/, '');
+  const identity = document.getElementById('s1-identity').value.trim();
+  const token    = document.getElementById('s1-token').value.trim();
+
+  if (!url)      { showStep1Error("Enter the address of the team's server."); return; }
+  if (!identity) { showStep1Error('Enter your name for the chat.'); return; }
+  if (!token) {
+    showStep1Error('Paste the team token. Whoever runs the team can give it to you; it starts with tm_.');
+    return;
+  }
+
+  const next = document.getElementById('btn-step1-next');
+  if (next) { next.disabled = true; next.textContent = 'Joining…'; }
+  const status = await probeTeamToken(url, token);
+  if (next) { next.disabled = false; next.textContent = 'Join team'; }
+
+  if (status === 'unreachable') {
+    showStep1Error(
+      `Can't reach ${url}. Check the address, that the server is running there, ` +
+      `and that this machine can reach it (same network or VPN).`
+    );
+    return;
+  }
+  if (status === 'rejected') {
+    showStep1Error(
+      `The server at ${url} did not accept that token. ` +
+      `Ask whoever runs the team for its current team token.`
+    );
+    return;
+  }
+  if (status !== 'ok') {
+    showStep1Error(
+      `Something answered at ${url}, but not like a Hold My Beer server ` +
+      `(HTTP ${status.split(':')[1]}). Check the address and port.`
+    );
+    return;
+  }
+
+  cfg.serverUrl     = url;
+  cfg.identity      = identity;
+  cfg.token         = token;
+  cfg.joinOnly      = true;
+  cfg.setupComplete = true;
+  // A joined machine has no team.yml and no local project.
+  cfg.teamName      = '';
+  cfg.projectDir    = '';
+  try {
+    await invoke('save_config', { config: cfg });
+  } catch (e) {
+    showStep1Error('Joined, but could not save the settings on this machine: ' + e);
+  }
+  wizardFromDashboard = false;
+  toDashboard();
 }
 
 function goStep(n) {
@@ -201,6 +392,9 @@ const TEAM_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 // server during Step 4 launch (no admin token needed when the server
 // runs with no COLLAB_TOKEN configured, which is the single-user case).
 function step1Next() {
+  if (wizardMode() === 'join') { joinExistingTeam(); return; }
+  clearStep1Error();
+  cfg.joinOnly = false;
   const token    = document.getElementById('s1-token').value.trim();
   const teamName = document.getElementById('s1-team-name').value.trim();
   const url      = document.getElementById('s1-url').value.trim();
@@ -679,6 +873,8 @@ async function doLaunch() {
   // there's a conflict we need to surface).
   setLaunchItem('li-server', 'running');
   let serverAlreadyRunning = false;
+  // null = nothing answered (connection refused, DNS failure, timeout).
+  let probeStatus = null;
   try {
     const probeUrl = cfg.serverUrl.replace(/\/+$/, '') + '/';
     const probeBearer = cfg.token || sessionAdminToken;
@@ -686,27 +882,49 @@ async function doLaunch() {
       headers: { Authorization: `Bearer ${probeBearer}` },
       signal: AbortSignal.timeout(2500),
     });
-    if (probe.status === 200) {
-      serverAlreadyRunning = true;
-      appendLaunchLog('✓ Found existing server at ' + cfg.serverUrl + ' — skipping local spawn', false);
-      // Register the session anyway so Cmd+Q / close-window warns about
-      // the local worker daemons this GUI is about to start, even though
-      // we skipped start_server (which normally records this).
-      try {
-        await invoke('mark_session_active', { projectDir: cfg.projectDir });
-      } catch (e) { /* non-fatal */ }
-      setLaunchItem('li-server', 'done');
-    } else if (probe.status === 401) {
+    probeStatus = probe.status;
+  } catch (e) { /* stays null */ }
+
+  if (probeStatus === 200) {
+    serverAlreadyRunning = true;
+    appendLaunchLog('✓ Found existing server at ' + cfg.serverUrl + ' — skipping local spawn', false);
+    // Register the session anyway so Cmd+Q / close-window warns about
+    // the local worker daemons this GUI is about to start, even though
+    // we skipped start_server (which normally records this).
+    try {
+      await invoke('mark_session_active', { projectDir: cfg.projectDir });
+    } catch (e) { /* non-fatal */ }
+    setLaunchItem('li-server', 'done');
+  } else if (probeStatus === 401) {
+    if (cfg.token) {
       setLaunchItem('li-server', 'error', 'token rejected (401)');
       appendLaunchLog('✗ Server at ' + cfg.serverUrl + ' rejected the token (401). Check that COLLAB_TOKEN matches what the server was started with.', true);
+    } else {
+      // No token was entered, so "token rejected" would be misleading:
+      // the server is simply someone else's, and it wants its own token.
+      setLaunchItem('li-server', 'error', 'a server is already there');
+      appendLaunchLog(
+        '✗ A server is already running at ' + cfg.serverUrl + '. To use it, go back to ' +
+        'step 1 and choose "Join an existing team" with its team token.', true);
+    }
+    resetLaunchBtn();
+    return;
+  } else if (probeStatus === null) {
+    if (!isLocalServerUrl(cfg.serverUrl)) {
+      // Another machine didn't answer. Starting a server here would not
+      // make that address work; it would only hide the real problem.
+      setLaunchItem('li-server', 'error', 'server unreachable');
+      appendLaunchLog(
+        "✗ Can't reach " + cfg.serverUrl + '. Hold My Beer only starts a server on this ' +
+        'machine. To host a new team here, set the Server URL to http://localhost:8000. ' +
+        'To use a server on another machine, check that it is running and reachable from ' +
+        'here, then choose "Join an existing team".', true);
       resetLaunchBtn();
       return;
     }
-    // Any other status (5xx, unexpected) → fall through and try to spawn locally.
-  } catch (e) {
-    // Connect refused / DNS failure / timeout → no server reachable, we'll spawn one.
     appendLaunchLog('• No server reachable at ' + cfg.serverUrl + ' — will start one locally', false);
   }
+  // Any other status (5xx, unexpected) → fall through and try to spawn locally.
 
   if (!serverAlreadyRunning) {
     appendLaunchLog('Starting collab-server on ' + cfg.serverUrl, false);
@@ -903,7 +1121,28 @@ function goToWizard() {
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
+// A joined machine runs no server and no workers, so the controls for
+// those are hidden rather than left to fail.
+const LOCAL_ONLY_CONTROLS = ['btn-start-server', 'btn-stop-server', 'btn-start-workers', 'btn-stop-workers'];
+
+function applyJoinOnlyUi() {
+  if (cfg.joinOnly) {
+    for (const id of LOCAL_ONLY_CONTROLS) {
+      const el = document.getElementById(id);
+      if (el) el.hidden = true;
+    }
+  } else {
+    // Server buttons are owned by pollServerStatus; only the worker
+    // buttons need restoring after a switch back from join mode.
+    for (const id of ['btn-start-workers', 'btn-stop-workers']) {
+      const el = document.getElementById(id);
+      if (el) el.hidden = false;
+    }
+  }
+}
+
 function showDashboard() {
+  applyJoinOnlyUi();
   // Pre-fill compose from identity
   const from = document.getElementById('compose-from');
   if (from && cfg.identity) from.value = cfg.identity;
@@ -1040,6 +1279,8 @@ function setConnStatus(up) {
 
 // ── Server status polling ─────────────────────────────────────────────────────
 async function pollServerStatus() {
+  // No local server to report on, and its buttons must stay hidden.
+  if (cfg.joinOnly) return;
   const running = await invoke('server_running').catch(() => false);
   const dot = document.getElementById('server-dot');
   const startBtn = document.getElementById('btn-start-server');
@@ -2187,6 +2428,9 @@ window.__wizard = {
   addWorker,
   removeWorker,
   step1Next,
+  joinExistingTeam,
+  isLocalServerUrl,
+  setWizardMode,
   step2Next,
   step3Next,
   doLaunch,
@@ -2218,6 +2462,8 @@ window.__wizard = {
   on('btn-generate-team-token','click', doGenerateTeamToken);
   on('btn-paste-team-token','click', doPasteTeamToken);
   on('btn-step1-next',      'click', step1Next);
+  on('s1-mode-new',         'change', () => setWizardMode('new'));
+  on('s1-mode-join',        'change', () => setWizardMode('join'));
   on('btn-browse',          'click', doBrowse);
   on('btn-step2-next',  'click', step2Next);
   on('btn-step3-next',  'click', step3Next);

@@ -963,3 +963,33 @@ main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-hei
   margin-left: auto;
 }
 
+
+/* ── Wizard step 1: new team / join existing ─────────────────────────────── */
+.mode-switch {
+  border: 0; margin: 0 0 18px; padding: 0; min-width: 0;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.mode-legend {
+  padding: 0; margin-bottom: 8px;
+  font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--dim-text);
+}
+.mode-option {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px;
+  align-items: start; text-align: left; cursor: pointer;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--sur2);
+}
+.mode-option input { margin-top: 3px; accent-color: var(--accent); }
+.mode-option .mode-title { font-weight: 600; color: var(--text); }
+.mode-option .mode-desc { grid-column: 2; font-size: 12px; line-height: 1.4; color: var(--dim-text); }
+.mode-option:has(input:checked) { border-color: var(--accent); }
+.mode-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 560px) { .mode-switch { grid-template-columns: 1fr; } }
+
+.step-error {
+  margin-top: 14px; padding: 10px 12px; border-radius: var(--r);
+  border: 1px solid var(--danger); color: var(--text);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-size: 13px; line-height: 1.45; text-align: left;
+}
