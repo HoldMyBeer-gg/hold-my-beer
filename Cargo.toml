@@ -7,4 +7,3 @@ exclude = [
     "collab-gui/src-tauri",
 ]
 resolver = "2"
-license-file = "LICENSE"
