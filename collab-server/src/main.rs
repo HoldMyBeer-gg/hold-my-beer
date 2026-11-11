@@ -32,7 +32,7 @@ fn load_dotenv() {
             }
             return;
         }
-        if home.as_ref().map_or(false, |h| &dir == h) {
+        if home.as_ref() == Some(&dir) {
             return;
         }
         if !dir.pop() {
