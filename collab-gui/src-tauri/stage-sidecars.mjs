@@ -46,9 +46,25 @@ if (build.status !== 0) {
 
 mkdirSync(binDir, { recursive: true });
 
+// Ask cargo where it put the binaries. `<repo>/target` is only the default:
+// CARGO_TARGET_DIR, or `build.target-dir` in a cargo config file, moves it,
+// and on a machine set up that way a hard-coded path finds nothing.
+let targetDir = join(repoRoot, 'target');
+try {
+  const meta = execFileSync(
+    'cargo',
+    ['metadata', '--format-version', '1', '--no-deps', '--manifest-path', join(repoRoot, 'Cargo.toml')],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  targetDir = JSON.parse(meta).target_directory || targetDir;
+} catch (err) {
+  console.warn(`Could not ask cargo for its target directory; assuming ${targetDir}`);
+  console.warn(`  (${err.message})`);
+}
+
 const exeSuffix = process.platform === 'win32' ? '.exe' : '';
 for (const name of ['collab', 'collab-server']) {
-  const src = join(repoRoot, 'target', profile, `${name}${exeSuffix}`);
+  const src = join(targetDir, profile, `${name}${exeSuffix}`);
   const dst = join(binDir, `${name}-${triple}${exeSuffix}`);
   if (!existsSync(src)) {
     console.error(`missing built binary: ${src}`);

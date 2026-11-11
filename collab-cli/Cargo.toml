@@ -12,7 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+# rustls instead of the default native-tls, so the CLI builds without the
+# system's OpenSSL headers (a fresh Raspberry Pi or Steam Deck has none).
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking", "rustls-tls", "charset", "http2"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
@@ -32,4 +34,12 @@ assert_cmd = "2"
 predicates = "3"
 holdmybeer-server = { path = "../collab-server" }
 axum = "0.7"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-native-tls", "sqlite", "macros"] }
+# SQLite is a local file, so sqlx needs no TLS backend. Asking for one
+# (the old "runtime-tokio-native-tls") made every build require the
+# system's OpenSSL headers.
+# Pinned to an unreleased sqlx commit on purpose. RUSTSEC-2026-0459 is fixed
+# in libsqlite3-sys 0.39, and every released sqlx (up to 0.9.0) refuses
+# anything from 0.38 up. Upstream main already allows it. Replace this with
+# a plain version as soon as sqlx publishes a release that does too; until
+# then these crates cannot be published to crates.io.
+sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "987b8c5a74b6da8b71da6b5549925a7f6e59aac9", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }

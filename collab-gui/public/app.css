@@ -963,3 +963,62 @@ main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-hei
   margin-left: auto;
 }
 
+
+/* ── Wizard step 1: new team / join existing ─────────────────────────────── */
+.mode-switch {
+  border: 0; margin: 0 0 18px; padding: 0; min-width: 0;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+}
+.mode-legend {
+  padding: 0; margin-bottom: 8px;
+  font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--dim-text);
+}
+.mode-option {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px;
+  align-items: start; text-align: left; cursor: pointer;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r);
+  background: var(--sur2);
+}
+.mode-option input { margin-top: 3px; accent-color: var(--accent); }
+.mode-option .mode-title { font-weight: 600; color: var(--text); }
+.mode-option .mode-desc { grid-column: 2; font-size: 12px; line-height: 1.4; color: var(--dim-text); }
+.mode-option:has(input:checked) { border-color: var(--accent); }
+.mode-option:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 560px) { .mode-switch { grid-template-columns: 1fr; } }
+
+.step-error {
+  margin-top: 14px; padding: 10px 12px; border-radius: var(--r);
+  border: 1px solid var(--danger); color: var(--text);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  font-size: 13px; line-height: 1.45; text-align: left;
+}
+
+.inp-code { font-size: 22px; letter-spacing: .18em; text-align: center; max-width: 220px; }
+
+/* ── Add a machine (pairing code) ────────────────────────────────────────── */
+.pair-panel {
+  position: fixed; inset: 0; z-index: 50;
+  display: grid; place-items: center; padding: 16px;
+  background: rgba(0, 0, 0, .55);
+}
+.pair-card {
+  width: min(460px, 100%); padding: 22px 24px;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--r);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.pair-title { margin: 0; font-size: 18px; }
+.pair-step { margin: 0; color: var(--dim-text); font-size: 13px; line-height: 1.5; }
+.pair-address {
+  font-family: var(--font-mono); font-size: 14px; line-height: 1.7;
+  padding: 8px 12px; border-radius: var(--r); background: var(--sur2);
+  overflow-wrap: anywhere; user-select: text;
+}
+.pair-code {
+  font-family: var(--font-mono); font-size: 40px; font-weight: 700;
+  letter-spacing: .12em; text-align: center; min-height: 52px;
+  color: var(--accent); user-select: text; font-variant-numeric: tabular-nums;
+}
+.pair-note { margin: 0; color: var(--dim-text); font-size: 12px; line-height: 1.5; }
+.pair-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }

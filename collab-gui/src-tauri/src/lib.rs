@@ -59,6 +59,11 @@ pub struct SavedConfig {
     pub project_dir: String,
     #[serde(default)]
     pub setup_complete: bool,
+    /// True when this machine joined a team whose server runs elsewhere.
+    /// The GUI then starts no server and no workers; it only needs
+    /// `server_url`, `token` and `identity`.
+    #[serde(default)]
+    pub join_only: bool,
     #[serde(default)]
     pub cli_template: String,
     #[serde(default)]
@@ -79,6 +84,7 @@ impl Default for SavedConfig {
             identity: String::new(),
             project_dir: String::new(),
             setup_complete: false,
+            join_only: false,
             cli_template: "claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit"
                 .into(),
             model: "haiku".into(),
@@ -290,6 +296,7 @@ pub fn run() {
             commands::read_file,
             commands::path_exists,
             commands::home_dir,
+            commands::local_addresses,
             commands::start_server,
             commands::mark_session_active,
             commands::stop_server,
@@ -325,4 +332,35 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod saved_config_tests {
+    use super::SavedConfig;
+
+    /// The frontend sends `joinOnly`. If the struct didn't carry it, serde
+    /// would drop it on save and a joined machine would land back in the
+    /// setup wizard on every launch.
+    #[test]
+    fn join_only_survives_a_save_and_load() {
+        let from_js = r#"{"token":"tm_abc","serverUrl":"http://10.0.0.7:8000",
+            "identity":"deck","setupComplete":true,"joinOnly":true}"#;
+        let cfg: SavedConfig = serde_json::from_str(from_js).unwrap();
+        assert!(cfg.join_only);
+        assert!(cfg.setup_complete);
+
+        let saved = serde_json::to_string(&cfg).unwrap();
+        assert!(saved.contains(r#""joinOnly":true"#), "{saved}");
+        let reloaded: SavedConfig = serde_json::from_str(&saved).unwrap();
+        assert!(reloaded.join_only);
+        assert_eq!(reloaded.server_url, "http://10.0.0.7:8000");
+    }
+
+    /// Configs written before this field existed must keep loading.
+    #[test]
+    fn configs_without_the_field_default_to_a_hosting_machine() {
+        let old = r#"{"token":"tm_abc","teamName":"t","setupComplete":true}"#;
+        let cfg: SavedConfig = serde_json::from_str(old).unwrap();
+        assert!(!cfg.join_only);
+    }
 }

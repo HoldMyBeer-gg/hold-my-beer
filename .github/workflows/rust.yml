@@ -12,12 +12,22 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Audits the lockfiles exactly as committed, because those are the
+  # versions that get built and shipped. The action used here before ran
+  # `cargo generate-lockfile` first, so it audited a fresh set of the newest
+  # versions instead and reported "no vulnerabilities" while the committed
+  # lockfile still carried flagged ones.
   audit:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Rust audit
-        uses: actions-rs/audit-check@35b7b53b1e25b55642157ac01b4adceb5b9ebef3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit the server and CLI lockfile
+        run: cargo audit --file Cargo.lock
+
+      - name: Audit the GUI lockfile
+        run: cargo audit --file collab-gui/src-tauri/Cargo.lock

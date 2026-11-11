@@ -154,6 +154,86 @@ pub fn home_dir() -> Option<String> {
         .ok()
 }
 
+// ─── Network addresses ────────────────────────────────────────────────────────
+
+/// Keep the addresses another machine could type to reach this one, in the
+/// order found, without repeats. Loopback and unspecified addresses only
+/// mean "this machine" and are dropped.
+pub fn reachable_addresses(candidates: impl IntoIterator<Item = std::net::IpAddr>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for ip in candidates {
+        if ip.is_loopback() || ip.is_unspecified() {
+            continue;
+        }
+        let text = ip.to_string();
+        if !out.contains(&text) {
+            out.push(text);
+        }
+    }
+    out
+}
+
+/// The address this machine would use to reach `target`, if it has a route.
+/// Connecting a UDP socket only picks a route; it sends nothing.
+fn source_address_towards(target: &str) -> Option<std::net::IpAddr> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect(target).ok()?;
+    socket.local_addr().ok().map(|a| a.ip())
+}
+
+/// Addresses to show when adding a machine to a team hosted here.
+///
+/// Two probes: an address on the public internet side (192.0.2.1 is
+/// reserved for documentation, so nothing is ever contacted) finds the
+/// home or office network address, and Tailscale's own service address
+/// finds the tailnet address when Tailscale is running. Without Tailscale
+/// both give the same answer and it is listed once.
+#[tauri::command]
+pub fn local_addresses() -> Vec<String> {
+    reachable_addresses(
+        ["192.0.2.1:9", "100.100.100.100:9"]
+            .into_iter()
+            .filter_map(source_address_towards),
+    )
+}
+
+#[cfg(test)]
+mod address_tests {
+    use super::reachable_addresses;
+    use std::net::IpAddr;
+
+    fn ips(list: &[&str]) -> Vec<IpAddr> {
+        list.iter().map(|s| s.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn keeps_network_addresses_in_order_without_repeats() {
+        let got = reachable_addresses(ips(&["192.168.1.20", "100.64.0.5", "192.168.1.20"]));
+        assert_eq!(got, vec!["192.168.1.20", "100.64.0.5"]);
+    }
+
+    #[test]
+    fn drops_addresses_that_only_mean_this_machine() {
+        let got = reachable_addresses(ips(&["127.0.0.1", "0.0.0.0", "::1", "::", "10.0.0.7"]));
+        assert_eq!(got, vec!["10.0.0.7"]);
+    }
+
+    #[test]
+    fn nothing_usable_is_an_empty_list() {
+        assert!(reachable_addresses(ips(&["127.0.0.1"])).is_empty());
+    }
+
+    /// Whatever this machine's network looks like, the command must not
+    /// panic and must never offer loopback.
+    #[test]
+    fn the_live_probe_never_offers_loopback() {
+        for a in super::local_addresses() {
+            let ip: IpAddr = a.parse().unwrap();
+            assert!(!ip.is_loopback() && !ip.is_unspecified(), "{a}");
+        }
+    }
+}
+
 // ─── Server lifecycle ─────────────────────────────────────────────────────────
 
 /// Spawn the bundled `collab-server` sidecar.
