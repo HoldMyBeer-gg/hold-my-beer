@@ -512,3 +512,27 @@ pub fn remove_worker_pid(pids_file: &Path, name: &str) -> Result<()> {
 
     Ok(())
 }
+
+/// Tell the server that a worker this machine just stopped is gone: release
+/// its lease and remove it from the roster.
+///
+/// Without this the server keeps listing the worker as present until its
+/// last heartbeat ages out, and keeps its lease for as long, so starting it
+/// again straight away is refused. The lease is only released for the pid
+/// that holds it, so passing the pid of the process that was killed cannot
+/// release a lease some other process has since taken.
+///
+/// Fails only when the server cannot be reached. Callers should report that
+/// and carry on: the process is already stopped, and the server works it
+/// out by itself within the liveness window.
+pub async fn release_on_server(
+    server: &str,
+    name: &str,
+    pid: u32,
+    token: Option<&str>,
+) -> Result<()> {
+    let client = crate::client::CollabClient::new(server, name, token);
+    client.release_lease(pid as i64).await?;
+    client.delete_presence().await?;
+    Ok(())
+}
