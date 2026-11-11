@@ -520,6 +520,23 @@ async function mintTeamTokenDuringLaunch(adminToken) {
   return data.token;
 }
 
+// How long a freshly spawned server gets to start answering.
+const SERVER_START_TIMEOUT_MS = 10000;
+
+// Wait for a server this app just spawned. Returns 'up' once it answers,
+// 'exited' as soon as its process is gone, or 'timeout'.
+async function waitForServerStart(serverUrl, bearer) {
+  const deadline = Date.now() + SERVER_START_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (await serverAnswers(serverUrl, bearer)) return 'up';
+    let running = true;
+    try { running = await invoke('server_running'); } catch (_) {}
+    if (!running) return 'exited';
+    await sleep(300);
+  }
+  return 'timeout';
+}
+
 // Wait for the server to respond to HTTP (any status). Used by the
 // auto-relaunch path so the token probe doesn't race against the bind.
 async function waitForServer(serverUrl, bearer, maxMs = 8000) {
@@ -1003,8 +1020,29 @@ async function doLaunch() {
         adminToken: sessionAdminToken,
         projectDir: cfg.projectDir,
       });
-      // Give the server a moment to start
-      await sleep(1200);
+      // Spawning is not starting. Wait until the server answers, and stop
+      // as soon as its process is gone: a port that is already taken kills
+      // it within milliseconds.
+      const outcome = await waitForServerStart(cfg.serverUrl, sessionAdminToken);
+      if (outcome !== 'up') {
+        let port = '';
+        try { port = new URL(cfg.serverUrl).port || '80'; } catch (_) {}
+        setLaunchItem('li-server', 'error', outcome === 'exited' ? 'server stopped' : 'no answer');
+        if (outcome === 'exited') {
+          appendLaunchLog('✗ The server did not stay running.', true);
+          if (lastServerLogLine) appendLaunchLog('  Its last message: ' + lastServerLogLine, true);
+          appendLaunchLog(
+            `  If something else is already using port ${port}, close it or put a ` +
+            `different port in the Server URL on step 1.`, true);
+        } else {
+          appendLaunchLog(
+            `✗ The server was started but did not answer at ${cfg.serverUrl} within ` +
+            `${SERVER_START_TIMEOUT_MS / 1000} seconds.`, true);
+          if (lastServerLogLine) appendLaunchLog('  Its last message: ' + lastServerLogLine, true);
+        }
+        resetLaunchBtn();
+        return;
+      }
       setLaunchItem('li-server', 'done');
       appendLaunchLog('✓ Server started', false);
     } catch (e) {
@@ -2502,7 +2540,13 @@ function fmtDuration(secs) {
   return `${m}m${s.toString().padStart(2, '0')}s`;
 }
 
+// The most recent non-empty line the server printed. Shown when a launch
+// fails, because it usually says why (for example, port already in use).
+let lastServerLogLine = '';
+
 function appendServerLog(line, isErr) {
+  const text = String(line == null ? '' : line).trim();
+  if (text) lastServerLogLine = text.split(/\r?\n/).pop().slice(0, 300);
   const inner = document.getElementById('server-log-inner');
   if (!inner) return;
   const span = document.createElement('span');
@@ -2611,8 +2655,17 @@ window.__wizard = {
   on('btn-generate-team-token','click', doGenerateTeamToken);
   on('btn-paste-team-token','click', doPasteTeamToken);
   on('btn-step1-next',      'click', step1Next);
-  on('s1-mode-new',         'change', () => setWizardMode('new'));
-  on('s1-mode-join',        'change', () => setWizardMode('join'));
+  // Only a person changing the mode clears the secrets. prefillWizard also
+  // sets the mode, right after filling in a saved token, and must keep it.
+  const switchMode = (mode) => {
+    for (const id of ['s1-token', 's1-code']) {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    }
+    setWizardMode(mode);
+  };
+  on('s1-mode-new',         'change', () => switchMode('new'));
+  on('s1-mode-join',        'change', () => switchMode('join'));
   on('btn-browse',          'click', doBrowse);
   on('btn-step2-next',  'click', step2Next);
   on('btn-step3-next',  'click', step3Next);
