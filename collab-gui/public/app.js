@@ -616,31 +616,31 @@ function renderWorkerCards() {
       <div class="wc-top">
         <div class="field">
           <label>Name</label>
-          <input class="inp wc-name inp-mono" type="text" value="${esc(w.name)}" placeholder="backend" autocomplete="off" spellcheck="false">
+          <input class="inp wc-name inp-mono" type="text" aria-label="Name of worker ${i + 1}" value="${esc(w.name)}" placeholder="backend" autocomplete="off" spellcheck="false">
         </div>
         <div class="field">
           <label>Role</label>
-          <input class="inp wc-role" type="text" value="${esc(w.role)}" placeholder="What this worker does">
+          <input class="inp wc-role" type="text" aria-label="Role of worker ${i + 1}" value="${esc(w.role)}" placeholder="What this worker does">
         </div>
       </div>
       <div class="wc-advanced-wrap">
-        <button type="button" class="btn btn-ghost btn-xs wc-adv-toggle">${hasAdvanced ? '▾' : '▸'} Advanced</button>
+        <button type="button" class="btn btn-ghost btn-xs wc-adv-toggle" aria-label="Advanced settings for worker ${i + 1}" aria-expanded="${hasAdvanced ? 'true' : 'false'}">${hasAdvanced ? '▾' : '▸'} Advanced</button>
         <div class="wc-advanced" ${hasAdvanced ? '' : 'hidden'}>
           <div class="field">
             <label>Codebase path override</label>
             <div class="dir-row">
-              <input class="inp wc-codebase inp-mono" type="text" value="${esc(w.codebase_path || '')}" placeholder="(use project folder from Step 2)">
+              <input class="inp wc-codebase inp-mono" type="text" aria-label="Codebase path override for worker ${i + 1}" value="${esc(w.codebase_path || '')}" placeholder="(use project folder from Step 2)">
               <button type="button" class="btn btn-ghost wc-browse">Browse</button>
             </div>
             <div class="hint-box">Set this when a worker lives in a different repo than the rest of the team.</div>
           </div>
           <div class="field">
             <label>Model override</label>
-            <input class="inp wc-model inp-mono" type="text" value="${esc(w.model || '')}" placeholder="(use default)">
+            <input class="inp wc-model inp-mono" type="text" aria-label="Model override for worker ${i + 1}" value="${esc(w.model || '')}" placeholder="(use default)">
           </div>
           <div class="field">
             <label>CLI template override</label>
-            <input class="inp wc-cli-template inp-mono" type="text" value="${esc(w.cli_template || '')}" placeholder="(use default)">
+            <input class="inp wc-cli-template inp-mono" type="text" aria-label="CLI template override for worker ${i + 1}" value="${esc(w.cli_template || '')}" placeholder="(use default)">
           </div>
         </div>
       </div>
@@ -649,6 +649,7 @@ function renderWorkerCards() {
       const panel = div.querySelector('.wc-advanced');
       panel.hidden = !panel.hidden;
       e.target.textContent = (panel.hidden ? '▸' : '▾') + ' Advanced';
+      e.target.setAttribute('aria-expanded', String(!panel.hidden));
     });
     div.querySelector('.wc-browse').addEventListener('click', async () => {
       try {
@@ -667,6 +668,11 @@ function renderWorkerCards() {
     rm.className = 'btn btn-ghost btn-icon wc-remove';
     rm.title = 'Remove worker';
     rm.textContent = '✕';
+    // Say which worker, and keep saying it as the name is edited.
+    const nameInput = div.querySelector('.wc-name');
+    const labelRemove = () => rm.setAttribute('aria-label', `Remove worker ${nameInput.value.trim() || i + 1}`);
+    labelRemove();
+    nameInput.addEventListener('input', labelRemove);
     rm.addEventListener('click', () => removeWorker(i));
     div.appendChild(rm);
     list.appendChild(div);
@@ -1540,6 +1546,7 @@ function renderRoster(workers) {
       kick.className = 'roster-kick';
       kick.textContent = '⚡';
       kick.title = `Kick @${w.instance_id} — fires one CLI call against their pending todos`;
+      kick.setAttribute('aria-label', `Kick ${w.instance_id}`);
       kick.addEventListener('click', (e) => {
         e.stopPropagation();
         kickWorker(w.instance_id, kick);
