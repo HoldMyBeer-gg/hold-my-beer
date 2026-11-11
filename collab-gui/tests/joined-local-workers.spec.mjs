@@ -230,3 +230,27 @@ test('an unreachable team server is reported in terms of the team, not of joinin
   expect(await calls(page, 'start_server')).toHaveLength(0);
   expect(await calls(page, 'run_command')).toHaveLength(0);
 });
+
+// Words that were written for the machine that hosts the team.
+test('a joined machine is not told it is starting a server', async ({ page }) => {
+  await mockTauri(page);
+  await page.goto('/');
+  await expect(page.locator('#feed-empty')).not.toContainText('start the server');
+  await expect(page.locator('#feed-empty')).toContainText('No messages yet');
+
+  await addWorkers(page);
+  await expect(page.locator('#step-4')).toHaveClass(/active/);
+  await expect(page.locator('#li-server .li-label')).toHaveText("Connecting to the team's server");
+});
+
+test('a machine starting its own team still reads as before', async ({ page }) => {
+  await mockTauri(page, { config: {} });
+  await page.goto('/');
+  await page.locator('#s1-url').fill('http://localhost:8000');
+  await page.locator('#s1-team-name').fill('test-team');
+  await page.locator('#s1-identity').fill('tester');
+  await page.locator('#btn-step1-next').click();
+  await expect(page.locator('#step-2')).toHaveClass(/active/);
+  await expect(page.locator('#li-server .li-label')).toHaveText('Starting collab-server');
+  await expect(page.locator('#feed-empty')).toContainText('start the server');
+});

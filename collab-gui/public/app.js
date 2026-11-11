@@ -469,6 +469,7 @@ function step1Next() {
   if (wizardMode() === 'join') { joinExistingTeam(); return; }
   clearStep1Error();
   cfg.joinOnly = false;
+  applyJoinWording();
   const token    = document.getElementById('s1-token').value.trim();
   const teamName = document.getElementById('s1-team-name').value.trim();
   const url      = document.getElementById('s1-url').value.trim();
@@ -681,6 +682,7 @@ async function openLocalWorkerSetup() {
     cfg.teamName = name;
   }
   addingLocalWorkers = true;
+  applyJoinWording();
   dashboardActive = false;
   const wiz  = document.getElementById('wizard');
   const dash = document.getElementById('dashboard');
@@ -1350,6 +1352,21 @@ function applyJoinOnlyUi() {
   const hasWorkers = !cfg.joinOnly || !!cfg.projectDir;
   for (const id of WORKER_CONTROLS) show(id, hasWorkers);
   show('btn-add-local-workers', cfg.joinOnly && !cfg.projectDir);
+  applyJoinWording();
+}
+
+// Some text was written for the machine that hosts the team and reads
+// wrongly on one that joined: it has no server to start.
+const FEED_EMPTY_HOST   = 'No messages yet — start the server and send one!';
+const FEED_EMPTY_JOINED = 'No messages yet. Send one to say hello.';
+
+function applyJoinWording() {
+  const empty = document.getElementById('feed-empty');
+  if (empty && (empty.textContent === FEED_EMPTY_HOST || empty.textContent === FEED_EMPTY_JOINED)) {
+    empty.textContent = cfg.joinOnly ? FEED_EMPTY_JOINED : FEED_EMPTY_HOST;
+  }
+  const label = document.querySelector('#li-server .li-label');
+  if (label) label.textContent = cfg.joinOnly ? "Connecting to the team's server" : 'Starting collab-server';
 }
 
 function showDashboard() {
