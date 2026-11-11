@@ -7,5 +7,6 @@ if ! command -v cargo-audit >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "pre-push: running cargo audit..."
-cargo audit
+echo "pre-push: running cargo audit on both lockfiles..."
+cargo audit --file Cargo.lock
+cargo audit --file collab-gui/src-tauri/Cargo.lock
