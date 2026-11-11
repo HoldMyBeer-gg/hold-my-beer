@@ -646,7 +646,7 @@ async fn main() -> Result<()> {
                     eprintln!(
                         "[{}] lease taken over: previous {} worker appears to have crashed without releasing",
                         chrono::Utc::now().format("%H:%M:%S UTC"),
-                        &instance_id
+                        instance_id
                     );
                 }
             }
