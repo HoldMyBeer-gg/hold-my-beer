@@ -39,14 +39,14 @@
         <fieldset class="mode-switch" id="s1-mode">
           <legend class="mode-legend">What are you setting up?</legend>
           <label class="mode-option">
-            <input type="radio" name="s1-mode" id="s1-mode-new" value="new" checked>
-            <span class="mode-title">Start a new team</span>
-            <span class="mode-desc">This machine runs the server and the workers.</span>
+            <input type="radio" name="s1-mode" id="s1-mode-new" value="new" checked aria-labelledby="s1-mode-new-title" aria-describedby="s1-mode-new-desc">
+            <span class="mode-title" id="s1-mode-new-title">Start a new team</span>
+            <span class="mode-desc" id="s1-mode-new-desc">This machine runs the server and the workers.</span>
           </label>
           <label class="mode-option">
-            <input type="radio" name="s1-mode" id="s1-mode-join" value="join">
-            <span class="mode-title">Join an existing team</span>
-            <span class="mode-desc">The server already runs on another machine. Watch and talk to the team from here.</span>
+            <input type="radio" name="s1-mode" id="s1-mode-join" value="join" aria-labelledby="s1-mode-join-title" aria-describedby="s1-mode-join-desc">
+            <span class="mode-title" id="s1-mode-join-title">Join an existing team</span>
+            <span class="mode-desc" id="s1-mode-join-desc">The server already runs on another machine. Watch and talk to the team from here.</span>
           </label>
         </fieldset>
 
@@ -103,7 +103,7 @@
 
         <div class="step-fields">
           <div class="field">
-            <label>Project folder</label>
+            <label for="s2-dir">Project folder</label>
             <div class="dir-row">
               <input id="s2-dir" class="inp" type="text" readonly placeholder="Click Browse to choose a folder…">
               <button class="btn btn-ghost" id="btn-browse">Browse</button>
@@ -129,7 +129,7 @@
 
         <div class="step-fields">
           <div class="field">
-            <label>Default AI tool</label>
+            <label for="s3-tool">Default AI tool</label>
             <select id="s3-tool" class="tool-select">
               <option value="claude">Claude (claude CLI)</option>
               <option value="cursor">Cursor</option>
@@ -140,13 +140,13 @@
           </div>
 
           <div class="field" id="custom-template-field" hidden>
-            <label>CLI template</label>
+            <label for="s3-custom-tmpl">CLI template</label>
             <input id="s3-custom-tmpl" class="inp inp-mono" type="text" placeholder='my-ai -p {prompt} --model {model}'>
             <div class="hint-box">Use <code>{prompt}</code>, <code>{model}</code>, <code>{workdir}</code> as placeholders.</div>
           </div>
 
           <div class="field">
-            <label>Model</label>
+            <label for="s3-model">Model</label>
             <input id="s3-model" class="inp inp-mono" type="text" value="haiku" placeholder="haiku, sonnet, opus…">
           </div>
 
@@ -238,7 +238,7 @@
       <button class="btn-icon-sm" id="btn-toggle-a11y" title="Pour it how you like — fonts, size, density" aria-label="Accessibility &amp; display">
         <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="4" r="1.6" fill="currentColor"/><path d="M5 9h14M9 9v11M15 9v11M9 14h6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
       </button>
-      <button class="btn btn-ghost btn-sm" id="btn-to-wizard" title="Setup">⚙</button>
+      <button class="btn btn-ghost btn-sm" id="btn-to-wizard" title="Setup" aria-label="Setup">⚙</button>
       <div class="conn-pill" id="conn-pill" title="SSE stream status">
         <div class="conn-dot2"></div>
         <span id="conn-label">connecting…</span>
@@ -272,7 +272,7 @@
       </div>
       <div class="roster-footer">
         <button class="btn btn-danger btn-sm u-full-w" id="btn-broadcast-stop">
-          ■ Stop All Workers
+          <span aria-hidden="true">■</span> Stop All Workers
         </button>
       </div>
     </aside>
@@ -308,7 +308,7 @@
           </span>
         </div>
         <div class="compose-row">
-          <textarea id="compose-text" class="inp" placeholder="Type a message…" rows="2"></textarea>
+          <textarea id="compose-text" class="inp" aria-label="Message" placeholder="Type a message…" rows="2"></textarea>
           <button class="btn-mic" id="btn-mic" title="Voice input (browser speech-to-text)" aria-label="Voice input">
             <svg viewBox="0 0 24 24" fill="none"><rect x="9" y="3" width="6" height="12" rx="3" stroke="currentColor" stroke-width="1.8"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
           </button>
@@ -328,13 +328,13 @@
         Todos
         <span class="todos-count" id="todos-count">0</span>
         <div class="feed-spacer"></div>
-        <button class="btn btn-ghost btn-xs" id="btn-todo-toggle-form" title="Add a task">+</button>
+        <button class="btn btn-ghost btn-xs" id="btn-todo-toggle-form" title="Add a task" aria-label="Add a task">+</button>
       </div>
       <div class="todo-compose" id="todo-compose" hidden>
         <select id="todo-assign-to" class="inp inp-sm" title="Assign to worker">
           <option value="">Assign to…</option>
         </select>
-        <textarea id="todo-desc" class="inp inp-sm" placeholder="Task description…" rows="2"></textarea>
+        <textarea id="todo-desc" class="inp inp-sm" aria-label="Task description" placeholder="Task description…" rows="2"></textarea>
         <button class="btn btn-primary btn-sm u-full-w" id="btn-add-todo">+ Add Task</button>
       </div>
       <div class="todos-list" id="todos-list" aria-live="polite" aria-label="Task list">
@@ -353,9 +353,9 @@
   <div class="pair-card">
     <h2 class="pair-title" id="pair-title">Add a machine</h2>
     <p class="pair-step">On the new machine, open Hold My Beer and choose <b>Join an existing team</b>. Enter this address:</p>
-    <div class="pair-address" id="pair-address"></div>
+    <div class="pair-address" id="pair-address" role="status" aria-label="Server address"></div>
     <p class="pair-step">and this code:</p>
-    <div class="pair-code" id="pair-code" aria-live="polite"></div>
+    <div class="pair-code" id="pair-code" role="status" aria-label="Pairing code"></div>
     <p class="pair-note" id="pair-note">The code works once and expires in 5 minutes. Anyone who has it and can reach the server can join the team, so share it only with the person setting up that machine.</p>
     <div class="step-error" id="pair-error" role="alert" hidden></div>
     <div class="pair-actions">
