@@ -4,6 +4,7 @@
 //! holdmybeer_cli::lifecycle::*`.
 
 pub mod client;
+pub mod home;
 pub mod init;
 pub mod lifecycle;
 pub mod team;

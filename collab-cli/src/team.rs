@@ -129,14 +129,7 @@ pub fn expand_tilde(p: &str) -> PathBuf {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var("USERPROFILE").ok().map(PathBuf::from)
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var("HOME").ok().map(PathBuf::from)
-    }
+    crate::home::home_dir()
 }
 
 impl TeamConfig {

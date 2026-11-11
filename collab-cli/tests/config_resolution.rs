@@ -46,6 +46,7 @@ fn env_file_sets_collab_instance() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())  // prevent reading real ~/.collab.toml
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -74,6 +75,7 @@ fn env_file_does_not_override_real_env() {
         .env("COLLAB_SERVER", "http://127.0.0.1:19998")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -105,6 +107,7 @@ fn env_file_walks_up_from_cwd() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -136,6 +139,7 @@ fn env_file_in_home_is_loaded() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -168,6 +172,7 @@ fn collab_toml_provides_instance() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))  // no global toml
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -201,6 +206,7 @@ fn global_collab_toml_provides_instance() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -239,6 +245,7 @@ fn local_toml_overrides_global_toml() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -284,6 +291,7 @@ fn local_toml_partial_merge_with_global() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -317,6 +325,7 @@ fn cli_flag_overrides_env_var() {
         .env("COLLAB_SERVER", "http://127.0.0.1:19990")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -344,6 +353,7 @@ fn env_var_overrides_dotenv() {
         .env("COLLAB_SERVER", "http://127.0.0.1:19988")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -375,6 +385,7 @@ fn dotenv_overrides_collab_toml() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -404,6 +415,7 @@ fn no_config_uses_defaults() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -438,6 +450,7 @@ fn token_from_env_file() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -468,6 +481,7 @@ fn token_from_collab_toml() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -494,7 +508,8 @@ fn missing_instance_shows_error() {
         .env_remove("COLLAB_INSTANCE")
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
-        .env("HOME", tmp.path().join("fake-home"));
+        .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"));
 
     cmd.assert()
         .failure()
@@ -523,6 +538,7 @@ workers:
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -565,6 +581,7 @@ workers:
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -602,6 +619,7 @@ workers:
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .assert()
         .success();
 
@@ -642,6 +660,7 @@ fn env_file_handles_quotes_and_comments() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 
@@ -681,6 +700,7 @@ fn collab_toml_ignores_unknown_fields() {
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
         .env("HOME", tmp.path().join("fake-home"))
+        .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
 

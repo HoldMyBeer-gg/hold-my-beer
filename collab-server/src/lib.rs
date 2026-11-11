@@ -1,4 +1,5 @@
 pub mod db;
+pub mod home;
 pub mod pairing;
 
 use axum::{

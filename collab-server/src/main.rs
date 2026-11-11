@@ -1,12 +1,11 @@
 use clap::Parser;
 use collab_server::{AppState, db};
 use std::sync::{Arc, atomic::AtomicUsize};
-use std::path::PathBuf;
 use std::time::Instant;
 
 /// Load .env file from cwd or parent directories.
 fn load_dotenv() {
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    let home = collab_server::home::home_dir();
     let mut dir = match std::env::current_dir() {
         Ok(d) => d,
         Err(_) => return,
@@ -43,8 +42,8 @@ fn load_dotenv() {
 fn token_from_config() -> Option<String> {
     #[derive(serde::Deserialize, Default)]
     struct Cfg { token: Option<String> }
-    let home = std::env::var("HOME").ok()?;
-    let contents = std::fs::read_to_string(format!("{}/.collab.toml", home)).ok()?;
+    let home = collab_server::home::home_dir()?;
+    let contents = std::fs::read_to_string(home.join(".collab.toml")).ok()?;
     toml::from_str::<Cfg>(&contents).ok()?.token
 }
 

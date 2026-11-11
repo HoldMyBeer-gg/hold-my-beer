@@ -73,11 +73,7 @@ fn is_stdout_tty() -> bool {
 // ── Stream singleton guard ────────────────────────────────────────────────────
 
 fn stream_lock_path(instance_id: &str) -> Option<PathBuf> {
-    #[cfg(windows)]
-    let home = std::env::var("USERPROFILE").ok();
-    #[cfg(not(windows))]
-    let home = std::env::var("HOME").ok();
-    home.map(|h| PathBuf::from(h).join(format!(".collab_stream_{}.pid", instance_id)))
+    crate::home::home_dir().map(|h| h.join(format!(".collab_stream_{}.pid", instance_id)))
 }
 
 /// RAII guard that removes the stream lockfile on drop.
@@ -107,11 +103,7 @@ pub struct ReadState {
 }
 
 fn state_path() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let home = std::env::var("USERPROFILE").ok().map(PathBuf::from);
-    #[cfg(not(windows))]
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
-    home.map(|h| h.join(".collab_state.toml"))
+    crate::home::home_dir().map(|h| h.join(".collab_state.toml"))
 }
 
 pub fn load_read_state() -> ReadState {
