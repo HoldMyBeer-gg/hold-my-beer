@@ -91,6 +91,47 @@ pub fn merge_config(existing: &str, settings: &[(&str, &str)]) -> String {
     text
 }
 
+/// What the desktop app writes to `~/.collab.toml`: the server and team token,
+/// with everything else in the file left as it was.
+///
+/// The app used to replace the whole file, which threw away `instance`,
+/// `recipients` and anything else set by hand or by `collab join`.
+///
+/// When the app created the team it also leaves the admin token as a comment,
+/// so the person can see it exists. It is a comment because the CLI takes the
+/// admin token from `COLLAB_ADMIN_TOKEN` only. An older note is replaced, and
+/// removed when there is no admin token.
+pub fn merge_app_config(existing: &str, host: &str, token: &str, admin_token: &str) -> String {
+    const NOTE: &str = "# admin_token = ";
+    let kept: Vec<&str> = existing
+        .lines()
+        .filter(|line| !line.starts_with(NOTE))
+        .collect();
+    let merged = merge_config(&kept.join("\n"), &[("host", host), ("token", token)]);
+    if admin_token.is_empty() {
+        return merged;
+    }
+
+    // The note goes right under the token it relates to. At the end of the
+    // file it could land inside a [section] and read as part of it.
+    let value = setting_line("admin_token", admin_token);
+    let note = format!("# {value}  # set COLLAB_ADMIN_TOKEN in your shell to use");
+    let mut out: Vec<&str> = Vec::new();
+    let mut in_section = false;
+    let mut placed = false;
+    for line in merged.lines() {
+        in_section |= line.trim_start().starts_with('[');
+        out.push(line);
+        if !placed && !in_section && top_level_key(line.trim_start()) == Some("token") {
+            out.push(&note);
+            placed = true;
+        }
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
 /// The key of a `key = value` line, if the line is one.
 fn top_level_key(line: &str) -> Option<&str> {
     if line.starts_with('#') {
@@ -246,5 +287,75 @@ mod tests {
         let settings = [("host", "http://raspi:8000"), ("token", "tm_abc")];
         let once = merge_config("instance = \"deck\"\n", &settings);
         assert_eq!(merge_config(&once, &settings), once);
+    }
+
+    #[test]
+    fn the_app_keeps_what_it_did_not_write() {
+        let before = "# mine\nhost = \"http://localhost:8000\"\ninstance = \"deck\"\nrecipients = [\"hermi\"]\n\n[extra]\nkeep = true\n";
+        let after = merge_app_config(before, "http://raspi:8000", "tm_new", "");
+        assert_eq!(
+            after,
+            "token = \"tm_new\"\n# mine\nhost = \"http://raspi:8000\"\ninstance = \"deck\"\nrecipients = [\"hermi\"]\n\n[extra]\nkeep = true\n"
+        );
+    }
+
+    #[test]
+    fn the_app_writes_a_new_file_as_before() {
+        assert_eq!(
+            merge_app_config("", "http://raspi:8000", "tm_new", ""),
+            "host = \"http://raspi:8000\"\ntoken = \"tm_new\"\n"
+        );
+    }
+
+    #[test]
+    fn the_admin_token_note_is_replaced_not_stacked() {
+        let first = merge_app_config("instance = \"mac\"\n", "http://h:8000", "tm_a", "adm_1");
+        assert_eq!(first.matches("# admin_token").count(), 1);
+        assert!(first.contains("# admin_token = \"adm_1\""), "{first}");
+
+        let second = merge_app_config(&first, "http://h:8000", "tm_a", "adm_2");
+        assert_eq!(second.matches("# admin_token").count(), 1);
+        assert!(
+            second.contains("adm_2") && !second.contains("adm_1"),
+            "{second}"
+        );
+        assert!(second.contains("instance = \"mac\""), "{second}");
+
+        // Joining a team later has no admin token: the old note must go.
+        let third = merge_app_config(&second, "http://h:8000", "tm_a", "");
+        assert!(!third.contains("admin_token"), "{third}");
+    }
+
+    #[test]
+    fn a_real_admin_token_setting_is_left_alone() {
+        let before = "admin_token = \"legacy\"\n";
+        let after = merge_app_config(before, "http://h:8000", "tm_a", "");
+        assert!(after.contains("admin_token = \"legacy\""), "{after}");
+    }
+
+    #[test]
+    fn blank_lines_and_sections_stay_where_they_were() {
+        let before = "# notes\ninstance = \"x\"\nhost = \"http://old:8000\"\ntoken = \"tm_old\"\n\n[section]\nkey = \"value\"\n";
+        let after = merge_app_config(before, "http://raspi:8000", "tm_new", "");
+        assert_eq!(
+            after,
+            "# notes\ninstance = \"x\"\nhost = \"http://raspi:8000\"\ntoken = \"tm_new\"\n\n[section]\nkey = \"value\"\n"
+        );
+    }
+
+    #[test]
+    fn the_admin_note_sits_with_the_token_not_inside_a_section() {
+        let before =
+            "host = \"http://old:8000\"\ntoken = \"tm_old\"\n\n[section]\nkey = \"value\"\n";
+        let after = merge_app_config(before, "http://h:8000", "tm_a", "adm_1");
+        assert_eq!(
+            after,
+            "host = \"http://h:8000\"\ntoken = \"tm_a\"\n# admin_token = \"adm_1\"  # set COLLAB_ADMIN_TOKEN in your shell to use\n\n[section]\nkey = \"value\"\n"
+        );
+        // Saving again leaves it exactly as it is.
+        assert_eq!(
+            merge_app_config(&after, "http://h:8000", "tm_a", "adm_1"),
+            after
+        );
     }
 }
