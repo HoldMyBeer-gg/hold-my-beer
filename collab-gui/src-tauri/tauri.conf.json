@@ -20,7 +20,8 @@
         "minWidth": 920,
         "minHeight": 620,
         "resizable": true,
-        "center": true
+        "center": true,
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {
