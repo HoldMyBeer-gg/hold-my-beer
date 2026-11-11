@@ -1,4 +1,5 @@
 pub mod db;
+pub mod pairing;
 
 use axum::{
     extract::{Extension, Path, Request, State},
@@ -234,6 +235,8 @@ pub struct AppState {
     pub tx: broadcast::Sender<Arc<BroadcastMsg>>,
     pub sse_subscribers: Arc<AtomicUsize>,
     pub started_at: Instant,
+    /// Outstanding pairing codes. In memory only; see [`pairing`].
+    pub pairing: Arc<std::sync::Mutex<pairing::PairingTable>>,
 }
 
 /// Extract the bearer token from either the `Authorization: Bearer ...` header
@@ -350,12 +353,21 @@ pub fn create_app(state: AppState) -> Router {
         .route("/admin/teams", post(create_team))
         .route("/admin/teams/:team_id/tokens", post(mint_team_token))
         .route("/admin/teams/:team_id/tokens/:token_prefix", delete(revoke_team_token))
+        .route("/pair/codes", post(create_pairing_code))
         .layer(TimeoutLayer::with_status_code(http::StatusCode::REQUEST_TIMEOUT, StdDuration::from_secs(30)));
 
     // SSE routes — no timeout, connections stay open indefinitely
     let sse = Router::new()
         .route("/events/:instance_id", get(stream_events))
         .route("/events", get(stream_all_events));
+
+    // The one route a caller can reach with no token: a new machine trading
+    // a pairing code for its first token. It is merged after the auth layer
+    // is applied, so the layer does not cover it. Everything it can do is
+    // gated by the code itself; see `pairing`.
+    let open = Router::new()
+        .route("/pair/redeem", post(redeem_pairing_code))
+        .layer(TimeoutLayer::with_status_code(http::StatusCode::REQUEST_TIMEOUT, StdDuration::from_secs(30)));
 
     Router::new()
         .merge(timed)
@@ -364,6 +376,7 @@ pub fn create_app(state: AppState) -> Router {
             shared_state.clone(),
             auth_middleware,
         ))
+        .merge(open)
         .layer(CorsLayer::permissive())
         .with_state(shared_state)
 }
@@ -379,6 +392,7 @@ pub async fn create_test_app() -> Router {
         tx,
         sse_subscribers: Arc::new(AtomicUsize::new(0)),
         started_at: Instant::now(),
+        pairing: Default::default(),
     };
     create_app(state)
 }
@@ -1193,6 +1207,122 @@ async fn mint_team_token(
 
     let token_prefix = token.chars().take(12).collect::<String>();
     Ok(Json(MintTokenResponse { token, token_prefix }).into_response())
+}
+
+// ── Pairing: add a machine with a short code ──────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PairingCodeResponse {
+    /// Six digits, shown to the person adding a machine.
+    pub code: String,
+    /// Seconds until the code stops working.
+    pub expires_in: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedeemRequest {
+    pub code: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RedeemResponse {
+    /// A new team token for the machine that redeemed the code. Shown once.
+    pub token: String,
+    pub team_id: String,
+    pub team_name: String,
+}
+
+/// 32 random bits. UUIDv4 is the randomness this crate already uses for
+/// tokens; four of its bytes are enough here.
+fn random_u32() -> u32 {
+    let bytes = *Uuid::new_v4().as_bytes();
+    // Bytes 0..4 are fully random in a v4 UUID (the fixed version and
+    // variant bits live in bytes 6 and 8).
+    u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+/// A member of a team asks for a code that lets one more machine join it.
+async fn create_pairing_code(
+    Extension(auth): Extension<AuthContext>,
+    State(state): State<Arc<AppState>>,
+) -> Result<Response, Response> {
+    let Some(team_id) = auth.team_id.as_deref() else {
+        let body = serde_json::json!({
+            "error": "team_required",
+            "message": "A pairing code adds a machine to a team, so it has to be requested with that team's token."
+        });
+        return Err((StatusCode::FORBIDDEN, Json(body)).into_response());
+    };
+
+    let code = state
+        .pairing
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .issue(team_id, Instant::now(), random_u32);
+
+    Ok(Json(PairingCodeResponse {
+        code,
+        expires_in: pairing::CODE_TTL.as_secs(),
+    })
+    .into_response())
+}
+
+/// A new machine trades a pairing code for a team token of its own.
+/// Reached without credentials; the code is the credential.
+async fn redeem_pairing_code(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<RedeemRequest>,
+) -> Result<Response, Response> {
+    let redeemed = state
+        .pairing
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .redeem(req.code.trim(), Instant::now());
+
+    let Ok(team_id) = redeemed else {
+        // One answer for unknown, expired and already-used codes.
+        let body = serde_json::json!({
+            "error": "invalid_code",
+            "message": "That code is not valid. Codes work once and expire after a few minutes; ask for a new one."
+        });
+        return Err((StatusCode::NOT_FOUND, Json(body)).into_response());
+    };
+
+    let internal = |what: &'static str| {
+        move |e: sqlx::Error| {
+            tracing::error!("pairing: {} failed: {}", what, e);
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    };
+
+    let team_name: Option<String> = sqlx::query_scalar("SELECT name FROM teams WHERE id = ?")
+        .bind(&team_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(internal("team lookup"))?;
+    // The team was deleted between issuing the code and redeeming it.
+    let Some(team_name) = team_name else {
+        return Err(StatusCode::NOT_FOUND.into_response());
+    };
+
+    // The machine gets its own token, not a copy of the member's, so it can
+    // be revoked on its own later.
+    let token = generate_token();
+    sqlx::query("INSERT INTO team_tokens (token_hash, team_id, created_at) VALUES (?, ?, ?)")
+        .bind(hash_token(&token))
+        .bind(&team_id)
+        .bind(Utc::now().to_rfc3339())
+        .execute(&state.db)
+        .await
+        .map_err(internal("token mint"))?;
+
+    tracing::info!("pairing: a machine joined team {}", team_id);
+    Ok(Json(RedeemResponse {
+        token,
+        team_id,
+        team_name,
+    })
+    .into_response())
 }
 
 async fn revoke_team_token(
@@ -2034,6 +2164,7 @@ mod lease_tests {
             tx,
             sse_subscribers: Arc::new(AtomicUsize::new(0)),
             started_at: Instant::now(),
+            pairing: Default::default(),
         };
         create_app(state)
     }
@@ -2056,6 +2187,7 @@ mod lease_tests {
             tx,
             sse_subscribers: Arc::new(AtomicUsize::new(0)),
             started_at: Instant::now(),
+            pairing: Default::default(),
         };
         create_app(state)
     }
@@ -2146,6 +2278,7 @@ mod lease_tests {
             db, token: None, audit: false, tx,
             sse_subscribers: Arc::new(AtomicUsize::new(0)),
             started_at: Instant::now(),
+            pairing: Default::default(),
         };
         let app = create_app(state);
         let resp = app.clone().oneshot(lease_req(&app, None, "webdev", 200)).await.unwrap();
@@ -2278,6 +2411,7 @@ mod lease_tests {
             db, token: None, audit: false, tx,
             sse_subscribers: Arc::new(AtomicUsize::new(0)),
             started_at: Instant::now(),
+            pairing: Default::default(),
         };
         (create_app(state), tok_a, tok_b)
     }
@@ -2641,5 +2775,193 @@ mod lease_tests {
         // Garbage stays None.
         assert!(parse_flexible_utc("not a date").is_none());
         assert!(parse_flexible_utc("").is_none());
+    }
+}
+
+#[cfg(test)]
+mod pairing_http_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    const ADMIN: &str = "admin-secret";
+
+    /// A locked-down server (admin token set) with one team and one member
+    /// token, plus the pool so tests can look at what was stored.
+    async fn locked_server_with_team(team_id: &str, member_token: &str) -> (Router, SqlitePool) {
+        let db = db::init_test_db().await.unwrap();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO teams (id, name, created_at) VALUES (?, ?, ?)")
+            .bind(team_id).bind(team_id).bind(&now)
+            .execute(&db).await.unwrap();
+        sqlx::query("INSERT INTO team_tokens (token_hash, team_id, created_at) VALUES (?, ?, ?)")
+            .bind(hash_token(member_token)).bind(team_id).bind(&now)
+            .execute(&db).await.unwrap();
+        let (tx, _) = broadcast::channel(256);
+        let state = AppState {
+            db: db.clone(),
+            token: Some(ADMIN.to_string()),
+            audit: false,
+            tx,
+            sse_subscribers: Arc::new(AtomicUsize::new(0)),
+            started_at: Instant::now(),
+            pairing: Default::default(),
+        };
+        (create_app(state), db)
+    }
+
+    fn post(uri: &str, bearer: Option<&str>, body: serde_json::Value) -> HttpRequest<Body> {
+        let mut b = HttpRequest::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(t) = bearer {
+            b = b.header("Authorization", format!("Bearer {t}"));
+        }
+        b.body(Body::from(body.to_string())).unwrap()
+    }
+
+    async fn json(resp: Response) -> serde_json::Value {
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    }
+
+    async fn new_code(app: &Router, member_token: &str) -> String {
+        let resp = app
+            .clone()
+            .oneshot(post("/pair/codes", Some(member_token), serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        json(resp).await["code"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn a_team_member_gets_a_six_digit_code() {
+        let (app, _) = locked_server_with_team("team-a", "tok-a").await;
+        let resp = app
+            .clone()
+            .oneshot(post("/pair/codes", Some("tok-a"), serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json(resp).await;
+        let code = body["code"].as_str().unwrap();
+        assert_eq!(code.len(), 6);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(body["expires_in"], pairing::CODE_TTL.as_secs());
+    }
+
+    #[tokio::test]
+    async fn asking_for_a_code_needs_a_team_token() {
+        let (app, _) = locked_server_with_team("team-a", "tok-a").await;
+
+        let anonymous = app
+            .clone()
+            .oneshot(post("/pair/codes", None, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+        // The admin token belongs to no team, so there is nothing to join.
+        let admin = app
+            .clone()
+            .oneshot(post("/pair/codes", Some(ADMIN), serde_json::json!({})))
+            .await
+            .unwrap();
+        assert_eq!(admin.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_new_machine_trades_the_code_for_its_own_token_without_credentials() {
+        let (app, db) = locked_server_with_team("team-a", "tok-a").await;
+        let code = new_code(&app, "tok-a").await;
+
+        // No Authorization header: the new machine has nothing yet.
+        let resp = app
+            .clone()
+            .oneshot(post("/pair/redeem", None, serde_json::json!({ "code": code })))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = json(resp).await;
+        let token = body["token"].as_str().unwrap().to_string();
+        assert!(token.starts_with("tm_"));
+        assert_ne!(token, "tok-a", "the machine gets a token of its own");
+        assert_eq!(body["team_id"], "team-a");
+        assert_eq!(body["team_name"], "team-a");
+
+        // The token is stored for that team, and the server accepts it.
+        let team: String =
+            sqlx::query_scalar("SELECT team_id FROM team_tokens WHERE token_hash = ?")
+                .bind(hash_token(&token))
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(team, "team-a");
+        let roster = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri("/roster")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(roster.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_code_cannot_be_used_twice() {
+        let (app, _) = locked_server_with_team("team-a", "tok-a").await;
+        let code = new_code(&app, "tok-a").await;
+        let redeem = || post("/pair/redeem", None, serde_json::json!({ "code": code }));
+
+        assert_eq!(app.clone().oneshot(redeem()).await.unwrap().status(), StatusCode::OK);
+        let again = app.clone().oneshot(redeem()).await.unwrap();
+        assert_eq!(again.status(), StatusCode::NOT_FOUND);
+        assert_eq!(json(again).await["error"], "invalid_code");
+    }
+
+    #[tokio::test]
+    async fn wrong_guesses_cancel_the_outstanding_code() {
+        let (app, _) = locked_server_with_team("team-a", "tok-a").await;
+        let code = new_code(&app, "tok-a").await;
+        // A guess that is certain to be wrong.
+        let wrong = if code == "000000" { "000001" } else { "000000" };
+
+        for _ in 0..pairing::MAX_FAILED_ATTEMPTS {
+            let resp = app
+                .clone()
+                .oneshot(post("/pair/redeem", None, serde_json::json!({ "code": wrong })))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        }
+        let resp = app
+            .clone()
+            .oneshot(post("/pair/redeem", None, serde_json::json!({ "code": code })))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn every_other_route_still_needs_credentials() {
+        // Opening /pair/redeem must not open anything else.
+        let (app, _) = locked_server_with_team("team-a", "tok-a").await;
+        for uri in ["/roster", "/pair/codes", "/admin/teams"] {
+            let method = if uri == "/pair/codes" { "POST" } else { "GET" };
+            let resp = app
+                .clone()
+                .oneshot(HttpRequest::builder().method(method).uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        }
     }
 }

@@ -157,6 +157,7 @@ async fn main() -> anyhow::Result<()> {
         tx,
         sse_subscribers: Arc::new(AtomicUsize::new(0)),
         started_at: Instant::now(),
+        pairing: Default::default(),
     };
     let app = collab_server::create_app(state);
 
