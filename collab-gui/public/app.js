@@ -25,7 +25,7 @@ let cfg = {
   // local server, no project folder, no workers. See joinExistingTeam.
   joinOnly:      false,
   cliTemplate:   'claude -p {prompt} --model {model} --allowedTools Bash,Read,Write,Edit',
-  model:         'haiku',
+  model:         'opus',
 };
 
 let workers = [
@@ -606,7 +606,7 @@ function step3Next() {
   if (updated.length === 0) { toast('Add at least one worker.', true); return; }
   workers = updated;
   cfg.cliTemplate = getCliTemplate();
-  cfg.model       = document.getElementById('s3-model').value.trim() || 'haiku';
+  cfg.model       = document.getElementById('s3-model').value.trim() || 'opus';
   goStep(4);
 }
 

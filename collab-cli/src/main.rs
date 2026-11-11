@@ -418,7 +418,8 @@ enum Commands {
         #[arg(long, value_name = "PATH")]
         workdir: Option<PathBuf>,
 
-        /// Model to pass to claude (default: haiku)
+        /// Model to pass to the worker CLI. No built-in default: it comes from
+        /// team.yml or workers.yml when this is not given.
         #[arg(long, value_name = "MODEL")]
         model: Option<String>,
 
