@@ -14,6 +14,10 @@
 //! an inherited stdin would block on the test runner's tty; with a null
 //! stdin it sees EOF immediately and exits 0 within milliseconds.
 
+// These tests stand in for an AI CLI with small shell scripts and mark them
+// executable through Unix permission bits, so they only build on Unix.
+#![cfg(unix)]
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;

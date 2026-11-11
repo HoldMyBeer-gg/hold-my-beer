@@ -186,6 +186,19 @@ async fn start_all_in_team_managed_dir_resolves_manifest() {
         .unwrap();
     let stderr = String::from_utf8_lossy(&start.stderr);
     let stdout = String::from_utf8_lossy(&start.stdout);
+
+    // Stop whatever `start all` launched before asserting anything, so a
+    // worker never outlives the test. On Windows a leftover worker also
+    // keeps the test runner's output open, which hangs anything reading it.
+    let _ = collab()
+        .args(["stop", "all"])
+        .current_dir(&repo)
+        .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
+        .env("COLLAB_SERVER", &server)
+        .env_remove("COLLAB_TOKEN")
+        .output();
+
     assert!(
         !stderr.contains("Manifest not found") && !stdout.contains("Manifest not found"),
         "start all from team-managed dir must not hit 'Manifest not found' — regression bit user 2026-04-17. \

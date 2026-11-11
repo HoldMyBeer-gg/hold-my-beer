@@ -31,3 +31,87 @@ jobs:
 
       - name: Audit the GUI lockfile
         run: cargo audit --file collab-gui/src-tauri/Cargo.lock
+
+  # Builds and tests the server and the CLI on every system they ship for.
+  # No system packages are installed: SQLite is bundled and TLS is rustls,
+  # so a C compiler is all the build needs.
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The CLI's end-to-end tests run the server binary, which belongs to
+      # another package, so everything is built before anything is tested.
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Test
+        run: cargo test --workspace --locked
+
+  # The GUI's Rust side. Linux is left out: Tauri there needs WebKitGTK from
+  # the system package manager, and these tests do not exercise it.
+  gui-rust:
+    name: GUI Rust tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            collab-gui/src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Tauri's build step expects the server and CLI binaries to be staged.
+      - name: Stage sidecars
+        run: node collab-gui/src-tauri/stage-sidecars.mjs
+      - name: Test
+        run: cargo test --locked --manifest-path collab-gui/src-tauri/Cargo.toml
+
+  # The GUI's page, driven in a real browser with Tauri replaced by a stub.
+  gui-web:
+    name: GUI browser tests
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: collab-gui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pnpm
+        run: npm install --global pnpm@9
+      # --ignore-workspace: a pnpm-workspace.yaml higher up the tree must not
+      # be able to turn this into an install of something else.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-workspace
+      - name: Install the test browser
+        run: pnpm exec playwright install chromium
+      # design-smoke and the two lighthouse specs are left out: design-smoke
+      # fails on main (it expects sparkline bars that are not drawn), and the
+      # lighthouse ones measure performance rather than behaviour.
+      - name: Test
+        run: >
+          pnpm exec playwright test
+          tests/wizard.spec.mjs
+          tests/wizard-logic.spec.mjs
+          tests/dashboard.spec.mjs
+          tests/features.spec.mjs
+          tests/join-team.spec.mjs
+          tests/a11y-labels.spec.mjs
+          tests/launch-server-failures.spec.mjs

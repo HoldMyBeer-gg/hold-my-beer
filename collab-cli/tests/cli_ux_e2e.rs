@@ -354,7 +354,7 @@ async fn admin_token_and_team_token_coexist_via_separate_env_vars() {
 async fn server_no_token_error_mentions_init_env() {
     let tmp = TempDir::new().unwrap();
     let out = Command::cargo_bin("collab-server")
-        .expect("binary")
+        .expect("collab-server is built by another package: run `cargo build --workspace` first")
         .env_remove("COLLAB_TOKEN")
         .env_remove("COLLAB_ADMIN_TOKEN")
         .env("HOME", tmp.path()) // no ~/.collab.toml
@@ -381,7 +381,7 @@ async fn server_no_token_error_mentions_init_env() {
 async fn init_env_writes_admin_token_env_var_not_plain_token() {
     let tmp = TempDir::new().unwrap();
     let out = Command::cargo_bin("collab-server")
-        .expect("binary")
+        .expect("collab-server is built by another package: run `cargo build --workspace` first")
         .args(["--init-env"])
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
