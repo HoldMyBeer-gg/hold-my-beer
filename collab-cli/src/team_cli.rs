@@ -5,7 +5,7 @@
 //! auth at all (in which case anyone with network access can admin — the
 //! server logs a loud warning in that case).
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -145,7 +145,9 @@ pub async fn show(
         if cfg.team != name {
             anyhow::bail!(
                 "team.yml at {} declares team '{}', but you asked about '{}'",
-                path.display(), cfg.team, name
+                path.display(),
+                cfg.team,
+                name
             );
         }
         println!();
@@ -154,9 +156,19 @@ pub async fn show(
             let handoff = if w.hands_off_to.is_empty() {
                 String::new()
             } else {
-                format!(" → {}", w.hands_off_to.iter().map(|n| format!("@{}", n)).collect::<Vec<_>>().join(", "))
+                format!(
+                    " → {}",
+                    w.hands_off_to
+                        .iter()
+                        .map(|n| format!("@{}", n))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             };
-            println!("  @{}  {}  [{}]{}", w.name, w.role, w.codebase_path, handoff);
+            println!(
+                "  @{}  {}  [{}]{}",
+                w.name, w.role, w.codebase_path, handoff
+            );
         }
     }
     Ok(())
@@ -200,7 +212,10 @@ pub async fn rotate_token(server: &str, admin_token: Option<&str>, name: &str) -
     println!("  {}", minted.token);
     println!();
     println!("⚠  The token is shown only once. Distribute it to the team.");
-    println!("   Old tokens still work — revoke them with the server's /admin/teams/{}/tokens/<hash-prefix>", team.team_id);
+    println!(
+        "   Old tokens still work — revoke them with the server's /admin/teams/{}/tokens/<hash-prefix>",
+        team.team_id
+    );
     println!("   endpoint once everyone has rotated. (A nicer CLI for this is coming.)");
     Ok(())
 }
@@ -305,17 +320,15 @@ pub fn adopt(workers_yml: &Path, team_yml_path: &Path) -> Result<()> {
     // Serialize + validate by round-tripping through TeamConfig::from_yaml —
     // this catches the full rule set (unknown fields, duplicate names, etc.)
     // before we touch the disk.
-    let new_yaml = serde_yaml::to_string(&team_cfg)
-        .with_context(|| "serializing new team.yml")?;
-    let _validated = TeamConfig::from_yaml(&new_yaml)
-        .with_context(|| "validating merged team.yml")?;
+    let new_yaml = serde_yaml::to_string(&team_cfg).with_context(|| "serializing new team.yml")?;
+    let _validated =
+        TeamConfig::from_yaml(&new_yaml).with_context(|| "validating merged team.yml")?;
 
     // Backup: write the merged YAML to a temp, then swap. If the swap
     // fails after we've deleted workers.yml, the human still has both
     // the backup and the original (workers.yml isn't deleted yet).
     let tmp = team_yml_path.with_extension("yml.tmp");
-    fs::write(&tmp, &new_yaml)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    fs::write(&tmp, &new_yaml).with_context(|| format!("writing {}", tmp.display()))?;
     fs::rename(&tmp, team_yml_path)
         .with_context(|| format!("renaming {} -> {}", tmp.display(), team_yml_path.display()))?;
 
@@ -331,10 +344,16 @@ pub fn adopt(workers_yml: &Path, team_yml_path: &Path) -> Result<()> {
 
     // Write the team-managed marker so the next `collab init workers.yml`
     // in this repo fails loudly.
-    let team_source = team_yml_path.canonicalize().unwrap_or_else(|_| team_yml_path.to_path_buf());
+    let team_source = team_yml_path
+        .canonicalize()
+        .unwrap_or_else(|_| team_yml_path.to_path_buf());
     TeamManagedMarker::write(Path::new(&codebase_path), &team_cfg.team, &team_source)?;
 
-    println!("Adopted {} into {}:", workers_yml.display(), team_yml_path.display());
+    println!(
+        "Adopted {} into {}:",
+        workers_yml.display(),
+        team_yml_path.display()
+    );
     for lw in &legacy.workers {
         println!("  + @{}  ({})", lw.name, lw.role);
     }
@@ -481,9 +500,16 @@ workers:
         .unwrap();
 
         let err = adopt(&workers_yml, &team_yml).unwrap_err().to_string();
-        assert!(err.contains("already has a worker named 'coder'"), "got: {}", err);
+        assert!(
+            err.contains("already has a worker named 'coder'"),
+            "got: {}",
+            err
+        );
         // Safety: original workers.yml preserved on refusal.
-        assert!(workers_yml.exists(), "workers.yml preserved when adopt fails");
+        assert!(
+            workers_yml.exists(),
+            "workers.yml preserved when adopt fails"
+        );
     }
 
     #[test]

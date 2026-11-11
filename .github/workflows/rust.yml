@@ -32,6 +32,25 @@ jobs:
       - name: Audit the GUI lockfile
         run: cargo audit --file collab-gui/src-tauri/Cargo.lock
 
+  # Formatting only: no build, so it answers in seconds. All three crates
+  # are kept in rustfmt's default style; run `cargo fmt` in the crate you
+  # changed before pushing.
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show the rustfmt version
+        run: cargo fmt --version
+
+      - name: Server and CLI
+        run: cargo fmt --all --check
+
+      - name: GUI
+        run: cargo fmt --check --manifest-path collab-gui/src-tauri/Cargo.toml
+
   # Builds and tests the server and the CLI on every system they ship for.
   # No system packages are installed: SQLite is bundled and TLS is rustls,
   # so a C compiler is all the build needs.

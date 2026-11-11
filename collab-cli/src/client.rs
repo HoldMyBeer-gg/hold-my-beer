@@ -26,26 +26,28 @@ pub fn repo_url() -> Option<String> {
     // Fall back to cached git remote detection.
     use std::sync::OnceLock;
     static GIT_REMOTE: OnceLock<Option<String>> = OnceLock::new();
-    GIT_REMOTE.get_or_init(|| {
-        let out = std::process::Command::new("git")
-            .args(["remote", "get-url", "origin"])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let raw = String::from_utf8(out.stdout).ok()?;
-        let raw = raw.trim();
-        let url = if let Some(rest) = raw.strip_prefix("git@") {
-            // git@github.com:user/repo.git  →  https://github.com/user/repo
-            let rest = rest.trim_end_matches(".git");
-            format!("https://{}", rest.replacen(':', "/", 1))
-        } else {
-            // https://github.com/user/repo.git  →  https://github.com/user/repo
-            raw.trim_end_matches(".git").to_string()
-        };
-        Some(url)
-    }).clone()
+    GIT_REMOTE
+        .get_or_init(|| {
+            let out = std::process::Command::new("git")
+                .args(["remote", "get-url", "origin"])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let raw = String::from_utf8(out.stdout).ok()?;
+            let raw = raw.trim();
+            let url = if let Some(rest) = raw.strip_prefix("git@") {
+                // git@github.com:user/repo.git  →  https://github.com/user/repo
+                let rest = rest.trim_end_matches(".git");
+                format!("https://{}", rest.replacen(':', "/", 1))
+            } else {
+                // https://github.com/user/repo.git  →  https://github.com/user/repo
+                raw.trim_end_matches(".git").to_string()
+            };
+            Some(url)
+        })
+        .clone()
 }
 
 /// Return a hash formatted as an OSC 8 terminal hyperlink when stdout is a tty.
@@ -238,7 +240,12 @@ pub struct UsageResponse {
 
 #[async_trait]
 pub trait CollabApi: Send + Sync {
-    async fn add_message(&self, recipient: &str, content: &str, refs: Option<Vec<String>>) -> Result<()>;
+    async fn add_message(
+        &self,
+        recipient: &str,
+        content: &str,
+        refs: Option<Vec<String>>,
+    ) -> Result<()>;
     async fn todo_add(&self, instance: &str, description: &str) -> Result<()>;
     async fn todo_done(&self, hash_prefix: &str) -> Result<()>;
     async fn fetch_pending_messages(&self) -> Result<Vec<Message>>;
@@ -275,7 +282,12 @@ pub struct CollabClient {
 
 #[async_trait]
 impl CollabApi for CollabClient {
-    async fn add_message(&self, recipient: &str, content: &str, refs: Option<Vec<String>>) -> Result<()> {
+    async fn add_message(
+        &self,
+        recipient: &str,
+        content: &str,
+        refs: Option<Vec<String>>,
+    ) -> Result<()> {
         CollabClient::add_message(self, recipient, content, refs).await
     }
     async fn todo_add(&self, instance: &str, description: &str) -> Result<()> {
@@ -306,9 +318,15 @@ impl CollabApi for CollabClient {
         CollabClient::report_usage(self, report).await
     }
 
-    fn base_url(&self) -> &str { &self.base_url }
-    fn bearer_token(&self) -> Option<&str> { self.token.as_deref() }
-    fn http_client(&self) -> &reqwest::Client { &self.client }
+    fn base_url(&self) -> &str {
+        &self.base_url
+    }
+    fn bearer_token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+    fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
 }
 
 impl CollabClient {
@@ -337,7 +355,9 @@ impl CollabClient {
 
         let url = format!("{}/presence/{}", self.base_url, self.instance_id);
         self.auth(self.client.put(&url))
-            .json(&PresenceUpdate { role: role.map(|r| r.to_string()) })
+            .json(&PresenceUpdate {
+                role: role.map(|r| r.to_string()),
+            })
             .send()
             .await?;
         Ok(())
@@ -347,12 +367,16 @@ impl CollabClient {
     /// server upserts on (team_id, worker) — no per-call rows kept.
     pub async fn report_usage(&self, report: &UsageReport<'_>) -> Result<()> {
         let url = format!("{}/usage", self.base_url);
-        let resp = self.auth(self.client.post(&url))
+        let resp = self
+            .auth(self.client.post(&url))
             .json(report)
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("usage report failed: HTTP {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "usage report failed: HTTP {}",
+                resp.status()
+            ));
         }
         Ok(())
     }
@@ -362,7 +386,10 @@ impl CollabClient {
         let url = format!("{}/usage", self.base_url);
         let resp = self.auth(self.client.get(&url)).send().await?;
         if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("fetch usage failed: HTTP {}", resp.status()));
+            return Err(anyhow::anyhow!(
+                "fetch usage failed: HTTP {}",
+                resp.status()
+            ));
         }
         Ok(resp.json::<UsageResponse>().await?)
     }
@@ -404,7 +431,9 @@ impl CollabClient {
         let status = resp.status();
         if status.is_success() {
             let state: LeaseState = resp.json().await?;
-            Ok(LeaseOutcome::Held { taken_over: state.taken_over })
+            Ok(LeaseOutcome::Held {
+                taken_over: state.taken_over,
+            })
         } else if status.as_u16() == 409 {
             let conflict: LeaseConflict = resp.json().await?;
             Ok(LeaseOutcome::Conflict {
@@ -438,7 +467,12 @@ impl CollabClient {
         Ok(())
     }
 
-    pub async fn list_messages(&self, unread_only: bool, from_filter: Option<&str>, since_hash: Option<&str>) -> Result<()> {
+    pub async fn list_messages(
+        &self,
+        unread_only: bool,
+        from_filter: Option<&str>,
+        since_hash: Option<&str>,
+    ) -> Result<()> {
         let url = format!("{}/messages/{}", self.base_url, self.instance_id);
 
         let response = self.auth(self.client.get(&url)).send().await?;
@@ -447,7 +481,11 @@ impl CollabClient {
             // Include the URL so the user (and the config-resolution test
             // suite) can see which server we tried — a bare `401 Unauthorized`
             // is useless when you're debugging which config got loaded.
-            anyhow::bail!("Failed to fetch messages from {}: {}", url, response.status());
+            anyhow::bail!(
+                "Failed to fetch messages from {}: {}",
+                url,
+                response.status()
+            );
         }
 
         let mut messages: Vec<Message> = response.json().await?;
@@ -514,10 +552,12 @@ impl CollabClient {
                 ""
             };
             println!("─────────────────────────────────────");
-            println!("← @{}  {}{}",  msg.sender, short_hash, tag);
+            println!("← @{}  {}{}", msg.sender, short_hash, tag);
             println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
             if !msg.refs.is_empty() {
-                let short_refs: Vec<String> = msg.refs.iter()
+                let short_refs: Vec<String> = msg
+                    .refs
+                    .iter()
                     .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                     .collect();
                 println!("Refs: {}", short_refs.join(", "));
@@ -537,14 +577,21 @@ impl CollabClient {
             anyhow::bail!("Failed to fetch history: {}", response.status());
         }
         let messages: Vec<Message> = response.json().await?;
-        let latest = messages.iter()
+        let latest = messages
+            .iter()
             .filter(|m| m.sender == sender)
             .max_by_key(|m| m.timestamp);
         match latest {
             None => anyhow::bail!("No messages found from @{}", sender),
             Some(msg) => {
-                println!("Replying to {} [{}] from @{}", msg.timestamp.format("%H:%M:%S UTC"), link_hash(&msg.hash[..7]), sender);
-                self.add_message(sender, content, Some(vec![msg.hash.clone()])).await
+                println!(
+                    "Replying to {} [{}] from @{}",
+                    msg.timestamp.format("%H:%M:%S UTC"),
+                    link_hash(&msg.hash[..7]),
+                    sender
+                );
+                self.add_message(sender, content, Some(vec![msg.hash.clone()]))
+                    .await
             }
         }
     }
@@ -557,12 +604,17 @@ impl CollabClient {
         }
         let messages: Vec<Message> = response.json().await?;
         let prefix = hash_prefix.trim_start_matches('@').to_lowercase();
-        let matches: Vec<&Message> = messages.iter()
+        let matches: Vec<&Message> = messages
+            .iter()
             .filter(|m| m.hash.starts_with(&prefix))
             .collect();
         match matches.len() {
             0 => anyhow::bail!("No message found with hash starting '{}'", prefix),
-            n if n > 1 => anyhow::bail!("Ambiguous: {} messages match '{}', use more characters", n, prefix),
+            n if n > 1 => anyhow::bail!(
+                "Ambiguous: {} messages match '{}', use more characters",
+                n,
+                prefix
+            ),
             _ => {
                 let msg = matches[0];
                 let direction = if msg.sender == self.instance_id {
@@ -576,7 +628,9 @@ impl CollabClient {
                 println!("Dir:  {}", direction);
                 println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
                 if !msg.refs.is_empty() {
-                    let short_refs: Vec<String> = msg.refs.iter()
+                    let short_refs: Vec<String> = msg
+                        .refs
+                        .iter()
                         .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                         .collect();
                     println!("Refs: {}", short_refs.join(", "));
@@ -595,7 +649,9 @@ impl CollabClient {
             async {
                 let url = format!("{}/messages/{}", self.base_url, self.instance_id);
                 let resp = self.auth(self.client.get(&url)).send().await?;
-                resp.json::<Vec<Message>>().await.map_err(anyhow::Error::from)
+                resp.json::<Vec<Message>>()
+                    .await
+                    .map_err(anyhow::Error::from)
             },
             async {
                 let resp = self.auth(self.client.get(&todos_url)).send().await?;
@@ -611,7 +667,11 @@ impl CollabClient {
                 } else {
                     println!("Active workers:\n");
                     for worker in &workers {
-                        let you = if worker.instance_id == self.instance_id { " ◀ you" } else { "" };
+                        let you = if worker.instance_id == self.instance_id {
+                            " ◀ you"
+                        } else {
+                            ""
+                        };
                         print!("  @{}{}", worker.instance_id, you);
                         if !worker.role.is_empty() {
                             print!("  —  {}", worker.role);
@@ -651,12 +711,18 @@ impl CollabClient {
                     println!("Unread messages for @{}:\n", self.instance_id);
                     for msg in &messages {
                         let short_hash = link_hash(&msg.hash[..7]);
-                        let tag = if msg.recipient == "all" { " [broadcast]" } else { "" };
+                        let tag = if msg.recipient == "all" {
+                            " [broadcast]"
+                        } else {
+                            ""
+                        };
                         println!("─────────────────────────────────────");
                         println!("← @{}  {}{}", msg.sender, short_hash, tag);
                         println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
                         if !msg.refs.is_empty() {
-                            let short_refs: Vec<String> = msg.refs.iter()
+                            let short_refs: Vec<String> = msg
+                                .refs
+                                .iter()
                                 .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                                 .collect();
                             println!("Refs: {}", short_refs.join(", "));
@@ -675,11 +741,15 @@ impl CollabClient {
                 println!("Pending tasks for @{}:\n", self.instance_id);
                 for todo in &todos {
                     println!("  {}  {}", &todo.hash[..7], todo.description);
-                    println!("  from @{}  —  {}", todo.assigned_by, todo.created_at.format("%Y-%m-%d %H:%M UTC"));
+                    println!(
+                        "  from @{}  —  {}",
+                        todo.assigned_by,
+                        todo.created_at.format("%Y-%m-%d %H:%M UTC")
+                    );
                     println!();
                 }
             }
-            Ok(_) => {} // no todos — silent
+            Ok(_) => {}  // no todos — silent
             Err(_) => {} // server may not support todos yet — silent
         }
 
@@ -721,7 +791,8 @@ impl CollabClient {
         };
 
         let url = format!("{}/messages", self.base_url);
-        let response = self.auth(self.client.post(&url))
+        let response = self
+            .auth(self.client.post(&url))
             .json(&payload)
             .send()
             .await?;
@@ -750,7 +821,9 @@ impl CollabClient {
         content: &str,
         refs: Option<Vec<String>>,
     ) -> Result<()> {
-        let msg = self.send_message_raw(recipient, content, refs.unwrap_or_default()).await?;
+        let msg = self
+            .send_message_raw(recipient, content, refs.unwrap_or_default())
+            .await?;
         println!("→ @{}  {}", recipient, link_hash(&msg.hash[..7]));
         println!("  Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
         Ok(())
@@ -765,8 +838,13 @@ impl CollabClient {
     /// Broadcast the stop signal and clear all roster presence entries.
     pub async fn stop_all(&self) -> Result<()> {
         // 1. Broadcast the stop signal so stream instances exit.
-        let msg = self.send_message_raw("all", STOP_WATCH_SIGNAL, vec![]).await?;
-        println!("⛔ Stop signal broadcast to @all  [{}]", link_hash(&msg.hash[..7]));
+        let msg = self
+            .send_message_raw("all", STOP_WATCH_SIGNAL, vec![])
+            .await?;
+        println!(
+            "⛔ Stop signal broadcast to @all  [{}]",
+            link_hash(&msg.hash[..7])
+        );
 
         // 2. Clear presence for all workers currently in the roster.
         match self.fetch_roster_pub().await {
@@ -775,7 +853,10 @@ impl CollabClient {
                     let url = format!("{}/presence/{}", self.base_url, worker.instance_id);
                     let _ = self.auth(self.client.delete(&url)).send().await;
                 }
-                println!("  Cleared presence for {} worker(s) — roster is now empty.", workers.len());
+                println!(
+                    "  Cleared presence for {} worker(s) — roster is now empty.",
+                    workers.len()
+                );
             }
             Err(e) => eprintln!("  Warning: could not clear roster: {}", e),
         }
@@ -794,7 +875,7 @@ impl CollabClient {
     }
 
     pub async fn stream_messages(&self, role: Option<String>) -> Result<()> {
-        use tokio::time::{sleep, Duration};
+        use tokio::time::{Duration, sleep};
 
         // Singleton guard: prevent multiple stream processes for the same instance.
         let _lock_guard = if let Some(path) = stream_lock_path(&self.instance_id) {
@@ -808,7 +889,9 @@ impl CollabClient {
                         anyhow::bail!(
                             "collab stream is already running for @{} (PID {})\n\
                              Kill it first:  kill {}",
-                            self.instance_id, pid, pid
+                            self.instance_id,
+                            pid,
+                            pid
                         );
                     }
                 }
@@ -823,24 +906,31 @@ impl CollabClient {
         // controlling terminal closing (e.g. `collab stream &`, nohup-less).
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
+            use tokio::signal::unix::{SignalKind, signal};
             if let Ok(mut sighup) = signal(SignalKind::hangup()) {
                 tokio::spawn(async move {
-                    loop { sighup.recv().await; }
+                    loop {
+                        sighup.recv().await;
+                    }
                 });
             }
         }
 
         // Persist role
         let mut state = load_read_state();
-        let effective_role = role.clone().or_else(|| state.roles.get(&self.instance_id).cloned());
+        let effective_role = role
+            .clone()
+            .or_else(|| state.roles.get(&self.instance_id).cloned());
         if let Some(ref r) = role {
             state.roles.insert(self.instance_id.clone(), r.clone());
             save_read_state(&state);
         }
         let role_str = effective_role.clone();
 
-        println!("Streaming messages for @{} (SSE — zero polling)", self.instance_id);
+        println!(
+            "Streaming messages for @{} (SSE — zero polling)",
+            self.instance_id
+        );
         println!("Press Ctrl+C to stop\n");
 
         // Heartbeat presence in background
@@ -886,17 +976,37 @@ impl CollabClient {
                                         if let Some(data) = line.strip_prefix("data: ") {
                                             if let Ok(msg) = serde_json::from_str::<Message>(data) {
                                                 if msg.content.trim() == STOP_WATCH_SIGNAL {
-                                                    println!("⛔ Stop signal received from @{} — clearing presence and exiting.", msg.sender);
+                                                    println!(
+                                                        "⛔ Stop signal received from @{} — clearing presence and exiting.",
+                                                        msg.sender
+                                                    );
                                                     let _ = self.delete_presence().await;
                                                     return Ok(());
                                                 }
-                                                let tag = if msg.recipient == "all" { " [broadcast]" } else { "" };
+                                                let tag = if msg.recipient == "all" {
+                                                    " [broadcast]"
+                                                } else {
+                                                    ""
+                                                };
                                                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                                                println!("← @{}{}  {}", msg.sender, tag, msg.timestamp.format("%H:%M:%S UTC"));
+                                                println!(
+                                                    "← @{}{}  {}",
+                                                    msg.sender,
+                                                    tag,
+                                                    msg.timestamp.format("%H:%M:%S UTC")
+                                                );
                                                 println!("Hash: {}", link_hash(&msg.hash[..7]));
                                                 if !msg.refs.is_empty() {
-                                                    let short_refs: Vec<String> = msg.refs.iter()
-                                                        .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
+                                                    let short_refs: Vec<String> = msg
+                                                        .refs
+                                                        .iter()
+                                                        .map(|r| {
+                                                            link_hash(
+                                                                &r.chars()
+                                                                    .take(7)
+                                                                    .collect::<String>(),
+                                                            )
+                                                        })
                                                         .collect();
                                                     println!("Refs: {}", short_refs.join(", "));
                                                 }
@@ -908,21 +1018,34 @@ impl CollabClient {
                                 }
                             }
                             Ok(None) => {
-                                println!("── connection closed, reconnecting in {}s ──", backoff_secs);
+                                println!(
+                                    "── connection closed, reconnecting in {}s ──",
+                                    backoff_secs
+                                );
                                 break;
                             }
                             Err(e) => {
-                                eprintln!("── stream error: {} — reconnecting in {}s ──", e, backoff_secs);
+                                eprintln!(
+                                    "── stream error: {} — reconnecting in {}s ──",
+                                    e, backoff_secs
+                                );
                                 break;
                             }
                         }
                     }
                 }
                 Ok(response) => {
-                    eprintln!("── server error: {} — reconnecting in {}s ──", response.status(), backoff_secs);
+                    eprintln!(
+                        "── server error: {} — reconnecting in {}s ──",
+                        response.status(),
+                        backoff_secs
+                    );
                 }
                 Err(e) => {
-                    eprintln!("── connection error: {} — reconnecting in {}s ──", e, backoff_secs);
+                    eprintln!(
+                        "── connection error: {} — reconnecting in {}s ──",
+                        e, backoff_secs
+                    );
                 }
             }
 
@@ -992,7 +1115,9 @@ impl CollabClient {
             println!("{} [{}]", direction, link_hash(&msg.hash[..7]));
             println!("Time: {}", msg.timestamp.format("%Y-%m-%d %H:%M:%S UTC"));
             if !msg.refs.is_empty() {
-                let short_refs: Vec<String> = msg.refs.iter()
+                let short_refs: Vec<String> = msg
+                    .refs
+                    .iter()
                     .map(|r| link_hash(&r.chars().take(7).collect::<String>()))
                     .collect();
                 println!("Refs: {}", short_refs.join(", "));
@@ -1019,7 +1144,11 @@ impl CollabClient {
         };
 
         let url = format!("{}/todos", self.base_url);
-        let resp = self.auth(self.client.post(&url)).json(&payload).send().await?;
+        let resp = self
+            .auth(self.client.post(&url))
+            .json(&payload)
+            .send()
+            .await?;
 
         if resp.status() == reqwest::StatusCode::BAD_REQUEST {
             anyhow::bail!("Bad request — check instance ID and description length");
@@ -1069,7 +1198,10 @@ impl CollabClient {
             println!("─────────────────────────────────────");
             println!("  {}  (from @{})", &todo.hash[..7], todo.assigned_by);
             println!("  {}", todo.description);
-            println!("  Assigned: {}", todo.created_at.format("%Y-%m-%d %H:%M UTC"));
+            println!(
+                "  Assigned: {}",
+                todo.created_at.format("%Y-%m-%d %H:%M UTC")
+            );
         }
         println!("─────────────────────────────────────");
         Ok(())
@@ -1104,7 +1236,11 @@ impl CollabClient {
 
         println!("Active workers:\n");
         for worker in workers {
-            let you = if worker.instance_id == self.instance_id { " (you)" } else { "" };
+            let you = if worker.instance_id == self.instance_id {
+                " (you)"
+            } else {
+                ""
+            };
             print!("  @{}{}", worker.instance_id, you);
             if !worker.role.is_empty() {
                 print!("  —  {}", worker.role);

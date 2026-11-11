@@ -13,7 +13,7 @@
 //! Single source of truth. If a worker's role drifts it's one file to fix,
 //! no matter how many codebases the team spans.
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -139,8 +139,8 @@ impl TeamConfig {
     /// pointing at the same repo is a guaranteed double-spawn), bogus team
     /// name characters.
     pub fn from_yaml(contents: &str) -> Result<Self> {
-        let mut cfg: TeamConfig = serde_yaml::from_str(contents)
-            .map_err(|e| anyhow!("Invalid team.yml: {}", e))?;
+        let mut cfg: TeamConfig =
+            serde_yaml::from_str(contents).map_err(|e| anyhow!("Invalid team.yml: {}", e))?;
 
         if !is_valid_team_name(&cfg.team) {
             anyhow::bail!(
@@ -161,7 +161,10 @@ impl TeamConfig {
         for w in &cfg.workers {
             if w.name.is_empty()
                 || w.name.len() > 64
-                || !w.name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                || !w
+                    .name
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
             {
                 anyhow::bail!(
                     "worker name '{}' is invalid (must be 1–64 chars, alphanumeric + dash/underscore)",
@@ -181,11 +184,16 @@ impl TeamConfig {
             let name_pattern_ok = |s: &str| {
                 !s.is_empty()
                     && s.len() <= 64
-                    && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+                    && s.chars()
+                        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
             };
             for ho in &w.hands_off_to {
                 if !name_pattern_ok(ho) {
-                    anyhow::bail!("worker '{}' has invalid hands_off_to target '{}'", w.name, ho);
+                    anyhow::bail!(
+                        "worker '{}' has invalid hands_off_to target '{}'",
+                        w.name,
+                        ho
+                    );
                 }
             }
             if let Some(rt) = &w.reports_to {
@@ -236,13 +244,16 @@ impl TeamConfig {
                 if target == w.name {
                     anyhow::bail!(
                         "worker '{}' {} itself — a worker can't hand off to itself",
-                        w.name, field
+                        w.name,
+                        field
                     );
                 }
                 if !seen_names.contains(target) {
                     anyhow::bail!(
                         "worker '{}' {} unknown teammate '{}' (not in team.yml)",
-                        w.name, field, target
+                        w.name,
+                        field,
+                        target
                     );
                 }
                 Ok(())
@@ -269,8 +280,12 @@ impl TeamConfig {
             let mut path: Vec<String> = vec![start.name.clone()];
             let mut cur = start.name.as_str();
             loop {
-                let Some(node) = cfg.workers.iter().find(|x| x.name == cur) else { break; };
-                let Some(next) = node.reports_to.as_deref() else { break; };
+                let Some(node) = cfg.workers.iter().find(|x| x.name == cur) else {
+                    break;
+                };
+                let Some(next) = node.reports_to.as_deref() else {
+                    break;
+                };
                 if path.iter().any(|p| p == next) {
                     path.push(next.to_string());
                     anyhow::bail!(
@@ -298,7 +313,10 @@ impl TeamConfig {
     /// Resolved per-worker CLI template with worker-level override taking
     /// precedence over the team-level default.
     pub fn resolved_cli_template(&self, worker: &TeamWorker) -> Option<String> {
-        worker.cli_template.clone().or_else(|| self.cli_template.clone())
+        worker
+            .cli_template
+            .clone()
+            .or_else(|| self.cli_template.clone())
     }
 
     pub fn resolved_model(&self, worker: &TeamWorker) -> Option<String> {
@@ -309,7 +327,8 @@ impl TeamConfig {
 fn is_valid_team_name(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
-        && s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// `.collab/team-managed` marker written into each worker's codebase_path
@@ -667,7 +686,11 @@ workers:
     works_with: [ghost]
 "#;
         let err = TeamConfig::from_yaml(yaml).unwrap_err().to_string();
-        assert!(err.contains("unknown teammate") && err.contains("ghost"), "got: {}", err);
+        assert!(
+            err.contains("unknown teammate") && err.contains("ghost"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]
@@ -681,7 +704,11 @@ workers:
     reports_to: ghost
 "#;
         let err = TeamConfig::from_yaml(yaml).unwrap_err().to_string();
-        assert!(err.contains("unknown teammate") && err.contains("ghost"), "got: {}", err);
+        assert!(
+            err.contains("unknown teammate") && err.contains("ghost"),
+            "got: {}",
+            err
+        );
     }
 
     #[test]

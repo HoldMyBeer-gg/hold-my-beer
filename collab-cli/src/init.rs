@@ -1,10 +1,10 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 
 #[cfg(unix)]
-use std::os::unix::fs::{PermissionsExt, MetadataExt as _};
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt};
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -25,7 +25,6 @@ pub struct ProjectConfig {
     pub cli_template: Option<String>,
     pub workers: Vec<WorkerConfig>,
 }
-
 
 fn default_server() -> String {
     "http://localhost:8000".to_string()
@@ -57,7 +56,11 @@ pub fn run_from_yaml(yaml_path: &Path, output_dir_override: Option<&str>) -> Res
     if config.workers.is_empty() {
         anyhow::bail!("No workers defined in '{}'", yaml_path.display());
     }
-    println!("Loaded {} worker(s) from {}", config.workers.len(), yaml_path.display());
+    println!(
+        "Loaded {} worker(s) from {}",
+        config.workers.len(),
+        yaml_path.display()
+    );
     generate(&config, output_dir_override)
 }
 
@@ -68,16 +71,29 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
         .unwrap_or_else(|| ".".to_string());
     let base = Path::new(&base_str);
 
-    println!("\nGenerating worker environments in '{}':\n", base.display());
+    println!(
+        "\nGenerating worker environments in '{}':\n",
+        base.display()
+    );
 
     for worker in &config.workers {
         let dir = base.join(&worker.name);
         std::fs::create_dir_all(&dir)?;
-        let worker_model = worker.model.as_ref()
+        let worker_model = worker
+            .model
+            .as_ref()
             .or(config.model.as_ref())
             .cloned()
             .unwrap_or_default();
-        let md = render_claude_md(worker, &config.workers, &config.server, &config.codebase_path, &worker_model, &config.shared_data_dir, &base_str);
+        let md = render_claude_md(
+            worker,
+            &config.workers,
+            &config.server,
+            &config.codebase_path,
+            &worker_model,
+            &config.shared_data_dir,
+            &base_str,
+        );
         let path = dir.join("AGENT.md");
         std::fs::write(&path, md)?;
         println!("  ✓  {}", path.display());
@@ -96,7 +112,8 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
         entries.push(format!(
             "    {}: {{\"avatar\": \"{}\", \"color\": {}}}",
             serde_json::to_string(&worker.name).unwrap(),
-            avatar, color
+            avatar,
+            color
         ));
     }
     let dashboard_cfg = format!("{{\n  \"workers\": {{\n{}\n  }}\n}}\n", entries.join(",\n"));
@@ -105,7 +122,10 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
     println!("  ✓  {} (import into dashboard)", cfg_path.display());
 
     println!("\n{} worker environment(s) created.", config.workers.len());
-    println!("\n⚠️  If any workers are already running, restart them to pick up the new server URL ({}).", config.server);
+    println!(
+        "\n⚠️  If any workers are already running, restart them to pick up the new server URL ({}).",
+        config.server
+    );
     println!("\nNext steps:");
     println!("  1. Start the collab server:    collab-server");
     println!("  2. Open each worker directory as a Claude Code project");
@@ -114,7 +134,15 @@ pub fn generate(config: &ProjectConfig, output_dir_override: Option<&str>) -> Re
     Ok(())
 }
 
-fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, codebase_path: &Option<String>, model: &str, shared_data_dir: &Option<String>, output_dir: &str) -> String {
+fn render_claude_md(
+    worker: &WorkerConfig,
+    all: &[WorkerConfig],
+    server: &str,
+    codebase_path: &Option<String>,
+    model: &str,
+    shared_data_dir: &Option<String>,
+    output_dir: &str,
+) -> String {
     let teammates: Vec<&WorkerConfig> = all.iter().filter(|w| w.name != worker.name).collect();
 
     let team_table = if teammates.is_empty() {
@@ -127,7 +155,10 @@ fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, c
         format!("| Instance | Role |\n|----------|------|\n{}", rows)
     };
 
-    let other = teammates.first().map(|w| w.name.as_str()).unwrap_or("teammate");
+    let other = teammates
+        .first()
+        .map(|w| w.name.as_str())
+        .unwrap_or("teammate");
 
     let team_list = if teammates.is_empty() {
         "_(solo)_".to_string()
@@ -148,7 +179,8 @@ fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, c
 
     // Resolve shared data root: shared_data_dir if set, else output_dir
     let data_root = shared_data_dir.as_deref().unwrap_or(output_dir);
-    let sibling_dirs: String = all.iter()
+    let sibling_dirs: String = all
+        .iter()
         .filter(|w| w.name != worker.name)
         .map(|w| format!("  {}/{}/", data_root, w.name))
         .collect::<Vec<_>>()
@@ -163,14 +195,23 @@ fn render_claude_md(worker: &WorkerConfig, all: &[WorkerConfig], server: &str, c
         reading from sibling directories under `{output_dir}/`.\n\n",
         data_root = data_root,
         name = worker.name,
-        siblings = if sibling_dirs.is_empty() { "  _(no other workers)_".to_string() } else { sibling_dirs },
+        siblings = if sibling_dirs.is_empty() {
+            "  _(no other workers)_".to_string()
+        } else {
+            sibling_dirs
+        },
         output_dir = output_dir,
     );
 
     let workdir_cmd = codebase_path
         .as_ref()
         .map(|p| format!("collab worker --workdir {} --model {}", p, model))
-        .unwrap_or_else(|| format!("collab worker --workdir <path-to-shared-codebase> --model {}", model));
+        .unwrap_or_else(|| {
+            format!(
+                "collab worker --workdir <path-to-shared-codebase> --model {}",
+                model
+            )
+        });
 
     format!(
         r#"# {name} — Collab Worker
@@ -291,17 +332,26 @@ Follow these without exception:
 use crate::lifecycle::WorkerManifestEntry;
 
 /// Write .collab/workers.json manifest for lifecycle management
-fn write_worker_manifest(project_root: &Path, output_dir: &Path, output_dir_str: &str, config: &ProjectConfig) -> Result<()> {
+fn write_worker_manifest(
+    project_root: &Path,
+    output_dir: &Path,
+    output_dir_str: &str,
+    config: &ProjectConfig,
+) -> Result<()> {
     let collab_dir = project_root.join(".collab");
     fs::create_dir_all(&collab_dir)?;
 
     let mut manifest_entries = Vec::new();
     for worker in &config.workers {
-        let worker_model = worker.model.as_ref()
+        let worker_model = worker
+            .model
+            .as_ref()
             .or(config.model.as_ref())
             .cloned()
             .unwrap_or_default();
-        let codebase_path = config.codebase_path.as_ref()
+        let codebase_path = config
+            .codebase_path
+            .as_ref()
             .map(|p| p.clone())
             .unwrap_or_else(|| {
                 std::env::current_dir()
@@ -309,9 +359,13 @@ fn write_worker_manifest(project_root: &Path, output_dir: &Path, output_dir_str:
                     .unwrap_or_else(|_| ".".to_string())
             });
 
-        let cli_tmpl = Some(worker.cli_template.clone()
-            .or_else(|| config.cli_template.clone())
-            .unwrap_or_else(|| "{agent} -p {prompt} --model {model}".to_string()));
+        let cli_tmpl = Some(
+            worker
+                .cli_template
+                .clone()
+                .or_else(|| config.cli_template.clone())
+                .unwrap_or_else(|| "{agent} -p {prompt} --model {model}".to_string()),
+        );
         manifest_entries.push(WorkerManifestEntry {
             name: worker.name.clone(),
             role: worker.role.clone(),
@@ -325,10 +379,13 @@ fn write_worker_manifest(project_root: &Path, output_dir: &Path, output_dir_str:
                 std::env::current_dir()
                     .map(|cwd| cwd.join(&rel))
                     .unwrap_or(rel)
-                    .to_string_lossy().to_string()
+                    .to_string_lossy()
+                    .to_string()
             },
             hands_off_to: worker.hands_off_to.clone(),
-            shared_data_dir: config.shared_data_dir.clone()
+            shared_data_dir: config
+                .shared_data_dir
+                .clone()
                 .or_else(|| Some(output_dir_str.to_string())),
         });
     }
@@ -345,7 +402,10 @@ fn write_worker_manifest(project_root: &Path, output_dir: &Path, output_dir_str:
         fs::set_permissions(&manifest_path, perms)?;
     }
 
-    println!("  ✓  {} (manifest for lifecycle commands)", manifest_path.display());
+    println!(
+        "  ✓  {} (manifest for lifecycle commands)",
+        manifest_path.display()
+    );
 
     Ok(())
 }

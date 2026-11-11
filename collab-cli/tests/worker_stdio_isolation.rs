@@ -55,16 +55,11 @@ fn detached_stdio_grandchild_does_not_hold_parent_pipe() {
     // detached stdio, the grandchild's FDs 0/1/2 point at /dev/null and the
     // parent's pipe closes the moment the parent exits.
     let mut cmd = Command::new("sh");
-    cmd.arg("-c")
-        .arg("( sleep 10 ) & echo spawned; exit 0");
+    cmd.arg("-c").arg("( sleep 10 ) & echo spawned; exit 0");
     configure_detached_stdio(&mut cmd);
 
     let start = Instant::now();
-    let status = cmd
-        .spawn()
-        .expect("spawn sh")
-        .wait()
-        .expect("wait sh");
+    let status = cmd.spawn().expect("spawn sh").wait().expect("wait sh");
     let elapsed = start.elapsed();
 
     assert!(status.success());
@@ -102,8 +97,7 @@ for fd in (0, 1, 2):
 sys.exit(0)
 "#;
     fs::write(&fake_collab, script).expect("write fake");
-    fs::set_permissions(&fake_collab, fs::Permissions::from_mode(0o755))
-        .expect("chmod fake");
+    fs::set_permissions(&fake_collab, fs::Permissions::from_mode(0o755)).expect("chmod fake");
 
     // SAFETY: serialized by PATH_LOCK within this test file.
     unsafe {

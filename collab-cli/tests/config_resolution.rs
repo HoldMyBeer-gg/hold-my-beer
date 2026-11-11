@@ -35,7 +35,10 @@ fn write_collab_toml(dir: &std::path::Path, contents: &str) {
 #[test]
 fn env_file_sets_collab_instance() {
     let tmp = TempDir::new().unwrap();
-    write_env(tmp.path(), "COLLAB_INSTANCE=from-dotenv\nCOLLAB_SERVER=http://127.0.0.1:19999\n");
+    write_env(
+        tmp.path(),
+        "COLLAB_INSTANCE=from-dotenv\nCOLLAB_SERVER=http://127.0.0.1:19999\n",
+    );
 
     // `collab list` should pick up COLLAB_INSTANCE from .env
     // It will fail to connect, but the error output includes the instance name
@@ -45,7 +48,7 @@ fn env_file_sets_collab_instance() {
         .env_remove("COLLAB_INSTANCE")
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
-        .env("HOME", tmp.path())  // prevent reading real ~/.collab.toml
+        .env("HOME", tmp.path()) // prevent reading real ~/.collab.toml
         .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
@@ -65,7 +68,10 @@ fn env_file_sets_collab_instance() {
 #[test]
 fn env_file_does_not_override_real_env() {
     let tmp = TempDir::new().unwrap();
-    write_env(tmp.path(), "COLLAB_INSTANCE=from-dotenv\nCOLLAB_SERVER=http://127.0.0.1:19999\n");
+    write_env(
+        tmp.path(),
+        "COLLAB_INSTANCE=from-dotenv\nCOLLAB_SERVER=http://127.0.0.1:19999\n",
+    );
 
     // Real env var should take precedence over .env
     let out = collab_bin()
@@ -98,7 +104,10 @@ fn env_file_walks_up_from_cwd() {
     fs::create_dir_all(&subdir).unwrap();
 
     // .env is in the parent, cwd is in the subdir
-    write_env(tmp.path().join("project").as_ref(), "COLLAB_INSTANCE=from-parent-env\nCOLLAB_SERVER=http://127.0.0.1:19997\n");
+    write_env(
+        tmp.path().join("project").as_ref(),
+        "COLLAB_INSTANCE=from-parent-env\nCOLLAB_SERVER=http://127.0.0.1:19997\n",
+    );
 
     let out = collab_bin()
         .current_dir(&subdir)
@@ -130,7 +139,10 @@ fn env_file_in_home_is_loaded() {
 
     // .env in $HOME IS loaded (walk-up reaches home and finds it)
     // This differs from .collab.toml which skips $HOME to avoid double-loading
-    write_env(tmp.path(), "COLLAB_INSTANCE=from-home-env\nCOLLAB_SERVER=http://127.0.0.1:19997\n");
+    write_env(
+        tmp.path(),
+        "COLLAB_INSTANCE=from-home-env\nCOLLAB_SERVER=http://127.0.0.1:19997\n",
+    );
 
     let out = collab_bin()
         .current_dir(&project)
@@ -171,7 +183,7 @@ fn collab_toml_provides_instance() {
         .env_remove("COLLAB_INSTANCE")
         .env_remove("COLLAB_SERVER")
         .env_remove("COLLAB_TOKEN")
-        .env("HOME", tmp.path().join("fake-home"))  // no global toml
+        .env("HOME", tmp.path().join("fake-home")) // no global toml
         .env("COLLAB_HOME", tmp.path().join("fake-home"))
         .output()
         .unwrap();
@@ -274,15 +286,9 @@ fn local_toml_partial_merge_with_global() {
     fs::create_dir_all(&project).unwrap();
 
     // Global has instance
-    write_collab_toml(
-        tmp.path(),
-        "instance = \"global-worker\"\n",
-    );
+    write_collab_toml(tmp.path(), "instance = \"global-worker\"\n");
     // Local has only host (no instance)
-    write_collab_toml(
-        &project,
-        "host = \"http://127.0.0.1:19992\"\n",
-    );
+    write_collab_toml(&project, "host = \"http://127.0.0.1:19992\"\n");
 
     let out = collab_bin()
         .current_dir(&project)
@@ -320,7 +326,13 @@ fn cli_flag_overrides_env_var() {
 
     let out = collab_bin()
         .current_dir(tmp.path())
-        .args(["--server", "http://127.0.0.1:19991", "--instance", "cli-worker", "list"])
+        .args([
+            "--server",
+            "http://127.0.0.1:19991",
+            "--instance",
+            "cli-worker",
+            "list",
+        ])
         .env("COLLAB_INSTANCE", "env-worker")
         .env("COLLAB_SERVER", "http://127.0.0.1:19990")
         .env_remove("COLLAB_TOKEN")
@@ -344,7 +356,10 @@ fn cli_flag_overrides_env_var() {
 #[test]
 fn env_var_overrides_dotenv() {
     let tmp = TempDir::new().unwrap();
-    write_env(tmp.path(), "COLLAB_SERVER=http://127.0.0.1:19989\nCOLLAB_INSTANCE=dotenv-worker\n");
+    write_env(
+        tmp.path(),
+        "COLLAB_SERVER=http://127.0.0.1:19989\nCOLLAB_INSTANCE=dotenv-worker\n",
+    );
 
     let out = collab_bin()
         .current_dir(tmp.path())
@@ -372,7 +387,10 @@ fn env_var_overrides_dotenv() {
 #[test]
 fn dotenv_overrides_collab_toml() {
     let tmp = TempDir::new().unwrap();
-    write_env(tmp.path(), "COLLAB_SERVER=http://127.0.0.1:19987\nCOLLAB_INSTANCE=dotenv-worker\n");
+    write_env(
+        tmp.path(),
+        "COLLAB_SERVER=http://127.0.0.1:19987\nCOLLAB_INSTANCE=dotenv-worker\n",
+    );
     write_collab_toml(
         tmp.path(),
         "host = \"http://127.0.0.1:19986\"\ninstance = \"toml-worker\"\n",
@@ -553,7 +571,10 @@ workers:
         root_manifest.exists(),
         "Expected manifest at {}, but it doesn't exist. Contents:\n{:?}",
         root_manifest.display(),
-        fs::read_dir(tmp.path()).unwrap().map(|e| e.unwrap().path()).collect::<Vec<_>>()
+        fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect::<Vec<_>>()
     );
     assert!(
         !wrong_manifest.exists(),
@@ -592,7 +613,8 @@ workers:
     let manifest = tmp.path().join(".collab/workers.json");
     assert!(
         manifest.exists(),
-        "Expected manifest at {}", manifest.display()
+        "Expected manifest at {}",
+        manifest.display()
     );
 }
 

@@ -268,10 +268,20 @@ async fn apply_team_schema(pool: &SqlitePool) -> Result<()> {
     // Add cache-telemetry columns if an older DB predates them. ALTER ADD
     // COLUMN is idempotent-safe via a presence check — sqlx errors when the
     // column already exists, which is why we guard.
-    add_column_if_missing(pool, "team_usage_totals", "cache_creation_tokens",
-        "INTEGER NOT NULL DEFAULT 0").await?;
-    add_column_if_missing(pool, "team_usage_totals", "cache_read_tokens",
-        "INTEGER NOT NULL DEFAULT 0").await?;
+    add_column_if_missing(
+        pool,
+        "team_usage_totals",
+        "cache_creation_tokens",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+    add_column_if_missing(
+        pool,
+        "team_usage_totals",
+        "cache_read_tokens",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
 
     Ok(())
 }
@@ -327,8 +337,7 @@ fn is_plain_sql(text: &str) -> bool {
 }
 
 pub async fn init_test_db() -> Result<SqlitePool> {
-    let options = SqliteConnectOptions::from_str("sqlite::memory:")?
-        .create_if_missing(true);
+    let options = SqliteConnectOptions::from_str("sqlite::memory:")?.create_if_missing(true);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -415,9 +424,10 @@ mod tests {
     async fn test_init_test_db() {
         let pool = init_test_db().await.unwrap();
 
-        let result = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
-            .fetch_one(&pool)
-            .await;
+        let result =
+            sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")
+                .fetch_one(&pool)
+                .await;
 
         assert!(result.is_ok());
     }
@@ -454,9 +464,10 @@ mod tests {
     async fn test_presence_table_exists() {
         let pool = init_test_db().await.unwrap();
 
-        let result = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='presence'")
-            .fetch_one(&pool)
-            .await;
+        let result =
+            sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name='presence'")
+                .fetch_one(&pool)
+                .await;
 
         assert!(result.is_ok());
     }
@@ -503,7 +514,10 @@ mod tests {
         let dup = sqlx::query("INSERT INTO worker_leases (team_id, instance_id, pid, host, acquired_at, last_heartbeat) VALUES (?, ?, ?, ?, ?, ?)")
             .bind(team_id).bind("webdev").bind(5678).bind("hostB").bind(now).bind(now)
             .execute(&pool).await;
-        assert!(dup.is_err(), "duplicate (team_id, instance_id) lease must be rejected");
+        assert!(
+            dup.is_err(),
+            "duplicate (team_id, instance_id) lease must be rejected"
+        );
 
         // Different team, same instance name is allowed.
         sqlx::query("INSERT INTO worker_leases (team_id, instance_id, pid, host, acquired_at, last_heartbeat) VALUES (?, ?, ?, ?, ?, ?)")
@@ -517,7 +531,10 @@ mod tests {
         let legacy_dup = sqlx::query("INSERT INTO worker_leases (team_id, instance_id, pid, host, acquired_at, last_heartbeat) VALUES (NULL, ?, ?, ?, ?, ?)")
             .bind("solo").bind(2).bind("hostY").bind(now).bind(now)
             .execute(&pool).await;
-        assert!(legacy_dup.is_err(), "duplicate legacy (NULL team_id) lease must be rejected");
+        assert!(
+            legacy_dup.is_err(),
+            "duplicate legacy (NULL team_id) lease must be rejected"
+        );
     }
 }
 
@@ -527,7 +544,12 @@ mod migration_tests {
 
     #[test]
     fn plain_sql_accepts_what_the_migrations_use() {
-        for ok in ["team_usage_totals", "cache_read_tokens", "INTEGER NOT NULL DEFAULT 0", "TEXT"] {
+        for ok in [
+            "team_usage_totals",
+            "cache_read_tokens",
+            "INTEGER NOT NULL DEFAULT 0",
+            "TEXT",
+        ] {
             assert!(is_plain_sql(ok), "{ok}");
         }
     }
@@ -552,11 +574,21 @@ mod migration_tests {
     #[tokio::test]
     async fn adding_a_column_twice_is_harmless() {
         let pool = init_test_db().await.unwrap();
-        add_column_if_missing(&pool, "teams", "probe_col", "TEXT").await.unwrap();
-        add_column_if_missing(&pool, "teams", "probe_col", "TEXT").await.unwrap();
+        add_column_if_missing(&pool, "teams", "probe_col", "TEXT")
+            .await
+            .unwrap();
+        add_column_if_missing(&pool, "teams", "probe_col", "TEXT")
+            .await
+            .unwrap();
 
-        let rows = sqlx::query("PRAGMA table_info(teams)").fetch_all(&pool).await.unwrap();
-        let hits = rows.iter().filter(|r| r.get::<String, _>("name") == "probe_col").count();
+        let rows = sqlx::query("PRAGMA table_info(teams)")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let hits = rows
+            .iter()
+            .filter(|r| r.get::<String, _>("name") == "probe_col")
+            .count();
         assert_eq!(hits, 1);
     }
 
@@ -568,6 +600,9 @@ mod migration_tests {
             .unwrap_err();
         assert!(err.to_string().contains("refusing"), "{err}");
         // The table is still there.
-        sqlx::query("SELECT COUNT(*) FROM teams").fetch_one(&pool).await.unwrap();
+        sqlx::query("SELECT COUNT(*) FROM teams")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     }
 }

@@ -1,10 +1,10 @@
 use anyhow::{Result, anyhow};
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
-use std::process::{Command, Child, Stdio};
-use std::fs;
-use std::collections::HashMap;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 
 /// Detach a command's stdio from the caller's stdin/stdout/stderr.
 ///
@@ -28,7 +28,11 @@ use std::os::windows::io::AsRawHandle;
 
 #[cfg(windows)]
 unsafe extern "system" {
-    fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> *mut core::ffi::c_void;
+    fn OpenProcess(
+        dwDesiredAccess: u32,
+        bInheritHandle: i32,
+        dwProcessId: u32,
+    ) -> *mut core::ffi::c_void;
     fn TerminateProcess(hProcess: *mut core::ffi::c_void, uExitCode: u32) -> i32;
     fn GetExitCodeProcess(hProcess: *mut core::ffi::c_void, lpExitCode: *mut u32) -> i32;
     fn CreateToolhelp32Snapshot(dwFlags: u32, th32ProcessID: u32) -> *mut core::ffi::c_void;
@@ -68,9 +72,9 @@ struct StdioInheritGuard {
 #[cfg(windows)]
 impl StdioInheritGuard {
     fn new() -> Self {
-        const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6;   // (DWORD)-10
-        const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;   // (DWORD)-11
-        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4;    // (DWORD)-12
+        const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6; // (DWORD)-10
+        const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5; // (DWORD)-11
+        const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4; // (DWORD)-12
         const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
         const INVALID_HANDLE_VALUE: *mut core::ffi::c_void = -1_isize as *mut _;
 
@@ -155,7 +159,6 @@ fn validate_workdir(path: &Path) -> Result<PathBuf> {
     Ok(canonical)
 }
 
-
 /// SECURITY: Spawn worker with validated args, safe env vars only
 pub fn spawn_worker(
     name: &str,
@@ -170,12 +173,19 @@ pub fn spawn_worker(
     let validated_workdir = validate_workdir(workdir)?;
 
     // Validate model string (alphanumeric only, max 20 chars) — prevent injection
-    if !model.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') || model.len() > 20 {
+    if !model
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        || model.len() > 20
+    {
         return Err(anyhow!("Invalid model name: '{}'", model));
     }
 
     // Validate instance name (alphanumeric, -, _, no path separators)
-    if !instance_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+    if !instance_name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
         return Err(anyhow!("Invalid instance name: '{}'", instance_name));
     }
 
@@ -194,8 +204,10 @@ pub fn spawn_worker(
         .unwrap_or_else(|| PathBuf::from("collab"));
     let mut cmd = Command::new(self_exe);
     cmd.arg("worker")
-        .arg("--workdir").arg(&validated_workdir)
-        .arg("--model").arg(model);
+        .arg("--workdir")
+        .arg(&validated_workdir)
+        .arg("--model")
+        .arg(model);
 
     if let Some(tmpl) = cli_template {
         cmd.arg("--cli-template").arg(tmpl);
@@ -246,7 +258,8 @@ pub fn spawn_worker(
     let _guard = StdioInheritGuard::new();
 
     // Spawn in background
-    let child = cmd.spawn()
+    let child = cmd
+        .spawn()
         .map_err(|e| anyhow!("Failed to spawn collab worker for '{}': {}", name, e))?;
 
     println!("✓ Started worker {} (PID: {})", name, child.id());
@@ -270,15 +283,23 @@ pub fn read_manifest(manifest_path: &Path) -> Result<Vec<WorkerManifestEntry>> {
         let mode = metadata.mode();
         // Warn if group/other can read (but allow it)
         if mode & 0o044 != 0 {
-            eprintln!("⚠ Warning: {} has group/other read permissions", manifest_path.display());
+            eprintln!(
+                "⚠ Warning: {} has group/other read permissions",
+                manifest_path.display()
+            );
         }
     }
 
     let content = fs::read_to_string(manifest_path)
         .map_err(|e| anyhow!("Cannot read manifest {}: {}", manifest_path.display(), e))?;
 
-    serde_json::from_str(&content)
-        .map_err(|e| anyhow!("Invalid JSON in manifest {}: {}", manifest_path.display(), e))
+    serde_json::from_str(&content).map_err(|e| {
+        anyhow!(
+            "Invalid JSON in manifest {}: {}",
+            manifest_path.display(),
+            e
+        )
+    })
 }
 
 /// Track running process PID with timestamp
@@ -320,9 +341,7 @@ pub fn process_exists(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // POSIX: send signal 0 to check if process exists
-        unsafe {
-            libc::kill(pid as i32, 0) == 0
-        }
+        unsafe { libc::kill(pid as i32, 0) == 0 }
     }
     #[cfg(windows)]
     {
@@ -359,7 +378,11 @@ fn process_group_exists(pgid: u32) -> bool {
             let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
             // stat format: pid (name) state ppid pgrp ...
             let fields: Vec<&str> = stat.split_whitespace().collect();
-            if fields.get(4).map(|g| *g == pgid.to_string()).unwrap_or(false) {
+            if fields
+                .get(4)
+                .map(|g| *g == pgid.to_string())
+                .unwrap_or(false)
+            {
                 return true;
             }
         }
@@ -390,7 +413,9 @@ pub fn kill_process(pid: u32, name: &str) -> Result<()> {
             }
             if std::time::Instant::now() >= deadline {
                 // Force kill anything still alive in the group
-                unsafe { libc::killpg(pid as i32, libc::SIGKILL); }
+                unsafe {
+                    libc::killpg(pid as i32, libc::SIGKILL);
+                }
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 break;
             }

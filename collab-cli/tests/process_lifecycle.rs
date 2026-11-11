@@ -33,7 +33,11 @@ mod unix {
         let parent_pgid = get_pgid(parent.id());
         let child_pgid = get_pgid(child.id());
         assert_eq!(parent_pgid, Some(pgid), "parent pgid mismatch");
-        assert_eq!(child_pgid, Some(pgid), "child did not join parent's process group");
+        assert_eq!(
+            child_pgid,
+            Some(pgid),
+            "child did not join parent's process group"
+        );
 
         (parent, child)
     }
@@ -70,8 +74,14 @@ fn killpg_kills_parent_and_child() {
     let child_pid = child.id();
     let pgid = parent_pid;
 
-    assert!(unix::process_running(parent_pid), "parent should be running before kill");
-    assert!(unix::process_running(child_pid), "child should be running before kill");
+    assert!(
+        unix::process_running(parent_pid),
+        "parent should be running before kill"
+    );
+    assert!(
+        unix::process_running(child_pid),
+        "child should be running before kill"
+    );
 
     let ret = unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGTERM) };
     assert_eq!(ret, 0, "killpg failed");
@@ -85,7 +95,9 @@ fn killpg_kills_parent_and_child() {
             break;
         }
         if std::time::Instant::now() >= deadline {
-            unsafe { libc::killpg(pgid as libc::pid_t, libc::SIGKILL); }
+            unsafe {
+                libc::killpg(pgid as libc::pid_t, libc::SIGKILL);
+            }
             let _ = parent.wait();
             let _ = child.wait();
             panic!(
@@ -97,8 +109,14 @@ fn killpg_kills_parent_and_child() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 
-    assert!(!unix::process_running(parent_pid), "parent must be dead after killpg");
-    assert!(!unix::process_running(child_pid), "child must be dead after killpg — no orphaned processes");
+    assert!(
+        !unix::process_running(parent_pid),
+        "parent must be dead after killpg"
+    );
+    assert!(
+        !unix::process_running(child_pid),
+        "child must be dead after killpg — no orphaned processes"
+    );
 }
 
 #[test]
@@ -110,14 +128,18 @@ fn killing_only_parent_leaves_child_alive_documents_the_bug() {
     let child_pid = child.id();
 
     // Old behavior: kill only the parent PID
-    unsafe { libc::kill(parent_pid as libc::pid_t, libc::SIGTERM); }
+    unsafe {
+        libc::kill(parent_pid as libc::pid_t, libc::SIGTERM);
+    }
     let _ = parent.wait(); // reap zombie
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     let child_still_running = unix::process_running(child_pid);
 
     // Clean up
-    unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGKILL); }
+    unsafe {
+        libc::kill(child_pid as libc::pid_t, libc::SIGKILL);
+    }
     let _ = child.wait();
 
     assert!(

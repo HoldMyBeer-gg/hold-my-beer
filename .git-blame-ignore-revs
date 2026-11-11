@@ -1,0 +1,5 @@
+# Commits that only reformat code. GitHub blame skips these; locally:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: run rustfmt over the server, CLI and GUI
+2822332974acc47f2a517bdc315e533d77eac363

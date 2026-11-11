@@ -22,7 +22,7 @@ use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 use assert_cmd::Command;
-use collab_server::{create_app, db, AppState, BroadcastMsg};
+use collab_server::{AppState, BroadcastMsg, create_app, db};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 
@@ -43,7 +43,9 @@ async fn start_server() -> String {
     let app = create_app(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
     format!("http://{}", addr)
 }
 
@@ -69,14 +71,22 @@ async fn team_show_with_team_token_returns_helpful_admin_hint() {
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
-        .assert().success();
+        .assert()
+        .success();
     let stdout = String::from_utf8_lossy(&create_out.get_output().stdout).to_string();
     let team_token = stdout
         .lines()
-        .find_map(|l| l.trim().strip_prefix("token:").map(|v| v.trim().to_string()))
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("token:")
+                .map(|v| v.trim().to_string())
+        })
         .or_else(|| {
             // alternate format — just scan for tm_
-            stdout.split_whitespace().find(|w| w.starts_with("tm_")).map(|s| s.to_string())
+            stdout
+                .split_whitespace()
+                .find(|w| w.starts_with("tm_"))
+                .map(|s| s.to_string())
         })
         .expect("create should print team token");
 
@@ -99,8 +109,7 @@ async fn team_show_with_team_token_returns_helpful_admin_hint() {
     );
     // The user sees a real hint, not a raw 403 or cryptic "Forbidden."
     assert!(
-        combined.to_lowercase().contains("team token")
-            || combined.to_lowercase().contains("admin"),
+        combined.to_lowercase().contains("team token") || combined.to_lowercase().contains("admin"),
         "403 on admin endpoint must mention team vs admin token. Got:\n{}",
         combined
     );
@@ -139,7 +148,8 @@ async fn whoami_probes_auth_even_without_instance() {
     );
     assert!(
         combined.to_lowercase().contains("ok")
-            && (combined.to_lowercase().contains("admin") || combined.to_lowercase().contains("team")),
+            && (combined.to_lowercase().contains("admin")
+                || combined.to_lowercase().contains("team")),
         "whoami must report auth status + token role. Got:\n{}",
         combined
     );
@@ -160,10 +170,14 @@ async fn whoami_labels_token_as_team_when_token_is_team_token() {
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
-        .assert().success();
+        .assert()
+        .success();
     let stdout = String::from_utf8_lossy(&create_out.get_output().stdout).to_string();
-    let team_token = stdout.split_whitespace().find(|w| w.starts_with("tm_"))
-        .expect("team token").to_string();
+    let team_token = stdout
+        .split_whitespace()
+        .find(|w| w.starts_with("tm_"))
+        .expect("team token")
+        .to_string();
 
     let out = collab()
         .args(["whoami"])
@@ -241,33 +255,44 @@ async fn lifecycle_commands_find_team_yaml_via_marker() {
             "team: lifecycle-test\nworkers:\n  - name: solo\n    role: r\n    codebase_path: {}\n",
             repo.display()
         ),
-    ).unwrap();
+    )
+    .unwrap();
 
-    collab().args(["init", team_yml.to_str().unwrap()])
+    collab()
+        .args(["init", team_yml.to_str().unwrap()])
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
-        .assert().success();
-    collab().args(["team", "create", "lifecycle-test", "--server", &server])
+        .assert()
+        .success();
+    collab()
+        .args(["team", "create", "lifecycle-test", "--server", &server])
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
-        .assert().success();
+        .assert()
+        .success();
 
-    let ps = collab().args(["ps"])
+    let ps = collab()
+        .args(["ps"])
         .current_dir(&repo)
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
-        .output().unwrap();
+        .output()
+        .unwrap();
     let stderr = String::from_utf8_lossy(&ps.stderr);
     let stdout = String::from_utf8_lossy(&ps.stdout);
     assert!(
         !stderr.contains("Manifest not found") && !stdout.contains("Manifest not found"),
         "collab ps from team-managed dir must not hit 'Manifest not found'. stderr:\n{}\nstdout:\n{}",
-        stderr, stdout
+        stderr,
+        stdout
     );
-    assert!(ps.status.success(), "collab ps must exit 0 when no workers running");
+    assert!(
+        ps.status.success(),
+        "collab ps must exit 0 when no workers running"
+    );
 }
 
 // ─── Pain point #6 ────────────────────────────────────────────────────────
@@ -284,19 +309,23 @@ async fn adopt_output_names_the_next_command_to_run() {
     fs::write(
         repo.join("workers.yml"),
         "workers:\n  - name: w\n    role: r\n",
-    ).unwrap();
+    )
+    .unwrap();
     let team_yml = tmp.path().join("t.yml");
 
-    let out = collab().args([
-        "team", "adopt",
-        repo.join("workers.yml").to_str().unwrap(),
-        team_yml.to_str().unwrap(),
-    ])
-    .env("HOME", tmp.path())
-    .env("COLLAB_HOME", tmp.path())
-    .env_remove("COLLAB_TOKEN")
-    .env_remove("COLLAB_ADMIN_TOKEN")
-    .assert().success();
+    let out = collab()
+        .args([
+            "team",
+            "adopt",
+            repo.join("workers.yml").to_str().unwrap(),
+            team_yml.to_str().unwrap(),
+        ])
+        .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
+        .env_remove("COLLAB_TOKEN")
+        .env_remove("COLLAB_ADMIN_TOKEN")
+        .assert()
+        .success();
     let stdout = String::from_utf8_lossy(&out.get_output().stdout);
     assert!(
         stdout.contains("collab team create"),
@@ -327,7 +356,8 @@ async fn admin_token_and_team_token_coexist_via_separate_env_vars() {
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
-        .assert().success();
+        .assert()
+        .success();
     let team_tok = String::from_utf8_lossy(&create.get_output().stdout)
         .split_whitespace()
         .find(|w| w.starts_with("tm_"))
@@ -362,7 +392,10 @@ async fn server_no_token_error_mentions_init_env() {
         .current_dir(tmp.path()) // no .env in cwd
         .output()
         .unwrap();
-    assert!(!out.status.success(), "server should refuse to start without a token");
+    assert!(
+        !out.status.success(),
+        "server should refuse to start without a token"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("--init-env") || stderr.contains("init-env"),
@@ -389,13 +422,13 @@ async fn init_env_writes_admin_token_env_var_not_plain_token() {
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&out.get_output().stdout);
-    let env_content = fs::read_to_string(tmp.path().join(".env"))
-        .expect(".env should be written");
+    let env_content = fs::read_to_string(tmp.path().join(".env")).expect(".env should be written");
 
     assert!(
         env_content.contains("COLLAB_ADMIN_TOKEN="),
         "init-env must write COLLAB_ADMIN_TOKEN (unambiguous). Got:\n{}\nStdout:\n{}",
-        env_content, stdout
+        env_content,
+        stdout
     );
     assert!(
         !env_content.trim().starts_with("COLLAB_TOKEN="),
