@@ -2091,7 +2091,9 @@ mod tests {
 /// - Spawn failures producing no diagnostic artifact
 /// - CLI timeouts producing no diagnostic artifact (and not killing the child)
 /// - Delegate target also receiving a duplicate `response` message
-#[cfg(test)]
+// Unix only: these tests drive the worker with shell scripts made executable
+// through Unix permission bits.
+#[cfg(all(test, unix))]
 mod integration {
     use super::*;
     use crate::client::CollabApi;

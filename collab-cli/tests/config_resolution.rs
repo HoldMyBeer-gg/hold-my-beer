@@ -632,7 +632,10 @@ workers:
     assert_eq!(arr[1]["name"], "delta");
     // output_dir should reference workers subdir, not project root
     assert!(
-        arr[0]["output_dir"].as_str().unwrap().contains("workers/gamma"),
+        // Compared as path components, so it holds for `workers/gamma` and
+        // for `workers\gamma` on Windows.
+        std::path::Path::new(arr[0]["output_dir"].as_str().unwrap())
+            .ends_with(std::path::Path::new("workers").join("gamma")),
         "output_dir should reference workers/gamma, got: {}",
         arr[0]["output_dir"]
     );
