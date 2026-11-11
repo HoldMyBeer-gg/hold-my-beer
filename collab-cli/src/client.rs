@@ -238,7 +238,11 @@ pub struct UsageResponse {
     pub total_cost_usd: f64,
 }
 
+// async_trait marks every method it rewrites as #[must_use], and the boxed
+// future each one returns is already must_use. Nothing in this source to
+// remove, so the lint is turned off for the trait.
 #[async_trait]
+#[allow(clippy::double_must_use)]
 pub trait CollabApi: Send + Sync {
     async fn add_message(
         &self,
