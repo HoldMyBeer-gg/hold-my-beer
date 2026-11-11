@@ -296,6 +296,7 @@ pub fn run() {
             commands::read_file,
             commands::path_exists,
             commands::home_dir,
+            commands::local_addresses,
             commands::start_server,
             commands::mark_session_active,
             commands::stop_server,

@@ -206,6 +206,7 @@ function setWizardMode(mode) {
     if (el) el.hidden = !visible;
   };
   show('s1-team-field', !join);
+  show('s1-code-field', join);
   show('btn-generate-team-token', !join);
   show('s1-token-optional', !join);
   show('s1-token-hint-new', !join);
@@ -284,15 +285,36 @@ async function joinExistingTeam() {
 
   if (!url)      { showStep1Error("Enter the address of the team's server."); return; }
   if (!identity) { showStep1Error('Enter your name for the chat.'); return; }
-  if (!token) {
-    showStep1Error('Paste the team token. Whoever runs the team can give it to you; it starts with tm_.');
+  // Spaces are for reading the code aloud, not part of it.
+  const code = document.getElementById('s1-code').value.replace(/\s+/g, '');
+  if (!code && !token) {
+    showStep1Error('Enter the six-digit pairing code, or paste the team token if you have no code.');
+    return;
+  }
+  if (code && !/^\d{6}$/.test(code)) {
+    showStep1Error('A pairing code is six digits.');
     return;
   }
 
   const next = document.getElementById('btn-step1-next');
-  if (next) { next.disabled = true; next.textContent = 'Joining…'; }
+  const busy = (on) => {
+    if (!next) return;
+    next.disabled = on;
+    next.textContent = on ? 'Joining…' : 'Join team';
+  };
+
+  if (code) {
+    busy(true);
+    const paired = await redeemPairingCode(url, code);
+    busy(false);
+    if (paired.error) { showStep1Error(paired.error); return; }
+    await finishJoin(url, identity, paired.token, paired.teamName);
+    return;
+  }
+
+  busy(true);
   const status = await probeTeamToken(url, token);
-  if (next) { next.disabled = false; next.textContent = 'Join team'; }
+  busy(false);
 
   if (status === 'unreachable') {
     showStep1Error(
@@ -316,13 +338,54 @@ async function joinExistingTeam() {
     return;
   }
 
+  await finishJoin(url, identity, token, '');
+}
+
+// Trade a six-digit pairing code for a team token. Returns `{ token,
+// teamName }`, or `{ error }` with a message for the person joining.
+async function redeemPairingCode(url, code) {
+  let res;
+  try {
+    res = await fetch(url + '/pair/redeem', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (_) {
+    return { error:
+      `Can't reach ${url}. Check the address, that the server is running there, ` +
+      `and that this machine can reach it (same network or VPN).` };
+  }
+  if (res.status === 404) {
+    return { error:
+      'That code is not valid. Codes work once and expire after five minutes. ' +
+      'Ask for a new one on a machine that is already in the team.' };
+  }
+  if (res.status === 401 || res.status === 403 || res.status === 405) {
+    // Every route on an older server wants a token, this one included.
+    return { error:
+      `The server at ${url} does not support pairing codes yet. ` +
+      `Paste the team token instead, or update the server.` };
+  }
+  if (!res.ok) {
+    return { error: `The server at ${url} could not pair this machine (HTTP ${res.status}).` };
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!data.token) return { error: `The server at ${url} paired this machine but sent no token.` };
+  return { token: data.token, teamName: data.team_name || '' };
+}
+
+// Save a successful join and open the dashboard.
+async function finishJoin(url, identity, token, teamName) {
   cfg.serverUrl     = url;
   cfg.identity      = identity;
   cfg.token         = token;
   cfg.joinOnly      = true;
   cfg.setupComplete = true;
-  // A joined machine has no team.yml and no local project.
-  cfg.teamName      = '';
+  // A joined machine has no team.yml and no local project. The team's
+  // name is known only when the server told us (pairing does).
+  cfg.teamName      = teamName;
   cfg.projectDir    = '';
   try {
     await invoke('save_config', { config: cfg });
@@ -1123,7 +1186,7 @@ function goToWizard() {
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 // A joined machine runs no server and no workers, so the controls for
 // those are hidden rather than left to fail.
-const LOCAL_ONLY_CONTROLS = ['btn-start-server', 'btn-stop-server', 'btn-start-workers', 'btn-stop-workers'];
+const LOCAL_ONLY_CONTROLS = ['btn-start-server', 'btn-stop-server', 'btn-start-workers', 'btn-stop-workers', 'btn-broadcast-stop'];
 
 function applyJoinOnlyUi() {
   if (cfg.joinOnly) {
@@ -1134,7 +1197,7 @@ function applyJoinOnlyUi() {
   } else {
     // Server buttons are owned by pollServerStatus; only the worker
     // buttons need restoring after a switch back from join mode.
-    for (const id of ['btn-start-workers', 'btn-stop-workers']) {
+    for (const id of ['btn-start-workers', 'btn-stop-workers', 'btn-broadcast-stop']) {
       const el = document.getElementById(id);
       if (el) el.hidden = false;
     }
@@ -1275,6 +1338,85 @@ function setConnStatus(up) {
       label.textContent = window.__sseEverLive ? 'reconnecting…' : 'connecting…';
     }
   }
+}
+
+// ── Add a machine: pairing code ───────────────────────────────────────────────
+// Any member of the team can let one more machine in. The server hands out a
+// six-digit code; the new machine types it on its Join screen.
+
+// Addresses the new machine can type to reach the team's server. A joined
+// machine already uses one. A host talks to its own server as localhost,
+// which is useless anywhere else, so it lists its network addresses.
+async function pairingAddresses() {
+  if (!isLocalServerUrl(cfg.serverUrl)) return [cfg.serverUrl.replace(/\/+$/, '')];
+  let port = '8000';
+  try { port = new URL(cfg.serverUrl).port || '80'; } catch (_) {}
+  let found = [];
+  try { found = (await invoke('local_addresses')) || []; } catch (_) {}
+  return found.map(ip => `http://${ip.includes(':') ? `[${ip}]` : ip}:${port}`).concat(
+    found.length ? [] : [`http://<this machine's network address>:${port}`]);
+}
+
+async function openPairPanel() {
+  const panel = document.getElementById('pair-panel');
+  if (!panel) return;
+  panel.hidden = false;
+  await requestPairingCode();
+}
+
+function closePairPanel() {
+  const panel = document.getElementById('pair-panel');
+  if (panel) panel.hidden = true;
+  // Don't leave a live code sitting in the page.
+  const codeEl = document.getElementById('pair-code');
+  if (codeEl) codeEl.textContent = '';
+}
+
+async function requestPairingCode() {
+  const codeEl = document.getElementById('pair-code');
+  const addrEl = document.getElementById('pair-address');
+  const errEl  = document.getElementById('pair-error');
+  codeEl.textContent = '';
+  errEl.hidden = true;
+  errEl.textContent = '';
+
+  const addresses = await pairingAddresses();
+  addrEl.textContent = '';
+  addresses.forEach((a, i) => {
+    if (i) addrEl.appendChild(document.createElement('br'));
+    addrEl.appendChild(document.createTextNode(a));
+  });
+  if (addresses.length > 1) {
+    addrEl.appendChild(document.createElement('br'));
+    const which = document.createElement('small');
+    which.textContent = 'Use whichever one the new machine can reach.';
+    addrEl.appendChild(which);
+  }
+
+  const fail = (why) => {
+    errEl.textContent = 'The server could not create a pairing code: ' + why;
+    errEl.hidden = false;
+  };
+  let res;
+  try {
+    res = await fetch(cfg.serverUrl.replace(/\/+$/, '') + '/pair/codes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.token}` },
+      body: '{}',
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (_) {
+    fail('it did not answer.');
+    return;
+  }
+  if (res.status === 404 || res.status === 405) { fail('it is an older version without pairing codes. Update the server.'); return; }
+  if (res.status === 403) { fail('this machine is not signed in with a team token.'); return; }
+  if (!res.ok) { fail('HTTP ' + res.status + '.'); return; }
+  const data = await res.json().catch(() => ({}));
+  const code = String(data.code || '');
+  if (!/^\d{6}$/.test(code)) { fail('it sent an unexpected reply.'); return; }
+  // Grouped in threes so it is easy to read across a room.
+  codeEl.textContent = code.slice(0, 3) + ' ' + code.slice(3);
 }
 
 // ── Server status polling ─────────────────────────────────────────────────────
@@ -2489,6 +2631,9 @@ window.__wizard = {
   on('btn-toggle-usage',  'click', toggleUsage);
   on('btn-toggle-todos',  'click', toggleTodos);
   on('btn-to-wizard',     'click', goToWizard);
+  on('btn-add-machine',   'click', openPairPanel);
+  on('btn-pair-new',      'click', requestPairingCode);
+  on('btn-pair-close',    'click', closePairPanel);
 
   // Dashboard — roster + feed + compose
   on('btn-broadcast-stop', 'click', doBroadcastStop);
