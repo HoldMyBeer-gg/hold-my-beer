@@ -67,6 +67,7 @@ async fn team_show_with_team_token_returns_helpful_admin_hint() {
         .args(["team", "create", "d4builder", "--server", &server])
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
         .assert().success();
     let stdout = String::from_utf8_lossy(&create_out.get_output().stdout).to_string();
@@ -87,6 +88,7 @@ async fn team_show_with_team_token_returns_helpful_admin_hint() {
         .env("COLLAB_TOKEN", &team_token)
         .env_remove("COLLAB_ADMIN_TOKEN")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .output()
         .unwrap();
 
@@ -119,6 +121,7 @@ async fn whoami_probes_auth_even_without_instance() {
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("COLLAB_SERVER", &server)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_INSTANCE")
         .env_remove("COLLAB_TOKEN")
         .output()
@@ -156,6 +159,7 @@ async fn whoami_labels_token_as_team_when_token_is_team_token() {
         .args(["team", "create", "blendteam", "--server", &server])
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .assert().success();
     let stdout = String::from_utf8_lossy(&create_out.get_output().stdout).to_string();
     let team_token = stdout.split_whitespace().find(|w| w.starts_with("tm_"))
@@ -166,6 +170,7 @@ async fn whoami_labels_token_as_team_when_token_is_team_token() {
         .env("COLLAB_TOKEN", &team_token)
         .env("COLLAB_SERVER", &server)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_ADMIN_TOKEN")
         .env_remove("COLLAB_INSTANCE")
         .output()
@@ -202,6 +207,7 @@ async fn dotenv_shadow_prints_warning_when_shell_shadows_env_file() {
         .current_dir(&repo)
         .env("COLLAB_TOKEN", "value-from-shell")
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_ADMIN_TOKEN")
         .env_remove("COLLAB_INSTANCE")
         .output()
@@ -239,16 +245,19 @@ async fn lifecycle_commands_find_team_yaml_via_marker() {
 
     collab().args(["init", team_yml.to_str().unwrap()])
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
         .assert().success();
     collab().args(["team", "create", "lifecycle-test", "--server", &server])
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .assert().success();
 
     let ps = collab().args(["ps"])
         .current_dir(&repo)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
         .output().unwrap();
     let stderr = String::from_utf8_lossy(&ps.stderr);
@@ -284,6 +293,7 @@ async fn adopt_output_names_the_next_command_to_run() {
         team_yml.to_str().unwrap(),
     ])
     .env("HOME", tmp.path())
+    .env("COLLAB_HOME", tmp.path())
     .env_remove("COLLAB_TOKEN")
     .env_remove("COLLAB_ADMIN_TOKEN")
     .assert().success();
@@ -316,6 +326,7 @@ async fn admin_token_and_team_token_coexist_via_separate_env_vars() {
         .args(["team", "create", "coexist", "--server", &server])
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .assert().success();
     let team_tok = String::from_utf8_lossy(&create.get_output().stdout)
         .split_whitespace()
@@ -329,6 +340,7 @@ async fn admin_token_and_team_token_coexist_via_separate_env_vars() {
         .env("COLLAB_ADMIN_TOKEN", ADMIN_TOKEN)
         .env("COLLAB_TOKEN", &team_tok)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .assert()
         .success();
 }
@@ -346,6 +358,7 @@ async fn server_no_token_error_mentions_init_env() {
         .env_remove("COLLAB_TOKEN")
         .env_remove("COLLAB_ADMIN_TOKEN")
         .env("HOME", tmp.path()) // no ~/.collab.toml
+        .env("COLLAB_HOME", tmp.path())
         .current_dir(tmp.path()) // no .env in cwd
         .output()
         .unwrap();
@@ -371,6 +384,7 @@ async fn init_env_writes_admin_token_env_var_not_plain_token() {
         .expect("binary")
         .args(["--init-env"])
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .current_dir(tmp.path())
         .assert()
         .success();

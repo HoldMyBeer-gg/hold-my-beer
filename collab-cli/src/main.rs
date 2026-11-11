@@ -5,6 +5,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 mod client;
+mod home;
 mod init;
 mod worker;
 mod lifecycle;
@@ -65,18 +66,7 @@ fn config_path() -> Option<PathBuf> {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    {
-        std::env::var("USERPROFILE").ok().map(PathBuf::from).or_else(|| {
-            let drive = std::env::var("HOMEDRIVE").ok()?;
-            let path = std::env::var("HOMEPATH").ok()?;
-            Some(PathBuf::from(format!("{}{}", drive, path)))
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        std::env::var("HOME").ok().map(PathBuf::from)
-    }
+    home::home_dir()
 }
 
 /// Load a .env file by walking up from cwd (same search as .collab.toml).

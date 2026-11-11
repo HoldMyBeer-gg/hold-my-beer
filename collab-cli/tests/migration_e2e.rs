@@ -76,6 +76,7 @@ async fn migration_adopt_then_start_finds_team_manifest() {
             repo.join("workers.yml").to_str().unwrap(),
             team_yml.to_str().unwrap()])
         .env("HOME", tmp.path()) // isolate ~/.collab.toml lookup
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
         .assert()
         .success();
@@ -92,6 +93,7 @@ async fn migration_adopt_then_start_finds_team_manifest() {
     collab()
         .args(["init", team_yml.to_str().unwrap()])
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
         .assert()
         .success();
@@ -102,6 +104,7 @@ async fn migration_adopt_then_start_finds_team_manifest() {
         .args(["team", "create", "my-repo", "--server", &server])
         .env("COLLAB_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .assert()
         .success();
     let create_stdout = String::from_utf8_lossy(&create_out.get_output().stdout);
@@ -114,6 +117,7 @@ async fn migration_adopt_then_start_finds_team_manifest() {
         .args(["ps"])
         .current_dir(&repo)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env("COLLAB_SERVER", &server)
         .env_remove("COLLAB_TOKEN")
         .output()
@@ -151,6 +155,7 @@ async fn start_all_in_team_managed_dir_resolves_manifest() {
     collab()
         .args(["init", team_yml.to_str().unwrap()])
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env_remove("COLLAB_TOKEN")
         .assert()
         .success();
@@ -161,6 +166,7 @@ async fn start_all_in_team_managed_dir_resolves_manifest() {
         .args(["team", "create", "starttest", "--server", &server])
         .env("COLLAB_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .assert()
         .success();
 
@@ -173,6 +179,7 @@ async fn start_all_in_team_managed_dir_resolves_manifest() {
         .args(["start", "all"])
         .current_dir(&repo)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .env("COLLAB_SERVER", &server)
         .env_remove("COLLAB_TOKEN")
         .output()
@@ -213,6 +220,7 @@ async fn adopt_with_mint_token_creates_team_on_server() {
         ])
         .env("COLLAB_TOKEN", ADMIN_TOKEN)
         .env("HOME", tmp.path())
+        .env("COLLAB_HOME", tmp.path())
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&out.get_output().stdout);

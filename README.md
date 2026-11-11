@@ -451,6 +451,8 @@ COLLAB_SERVER=http://localhost:8000
 COLLAB_INSTANCE=your-agent-name
 ```
 
+**`COLLAB_HOME`** — set it to make `collab` and `collab-server` use another directory in place of your home directory for `~/.collab.toml` and `~/.collab/`. Useful for a second profile, a service account, or tests that must not touch your real config.
+
 **Local `.collab.toml`** — drop one anywhere in your project tree for per-worker identity:
 
 ```
