@@ -42,6 +42,12 @@ let serverPollTimer = null;
 let presenceTimer = null;
 let dashboardActive = false;
 let wizardFromDashboard = false;
+// True while a joined machine is setting up workers of its own. The wizard
+// then runs from step 2: the team and its server are already chosen.
+let addingLocalWorkers = false;
+// Worker names this app has already launched, so going back and forward in
+// the wizard does not mistake our own workers for someone else's.
+const launchedWorkerNames = new Set();
 
 // Message state
 let allMessages = [];      // [{id,sender,recipient,content,timestamp,hash}]
@@ -95,6 +101,11 @@ const CLI_TEMPLATES = {
     // Unreachable is not a reason to forget the team: the dashboard shows
     // the connection as down and keeps retrying.
     revealDashboard();
+    // A joined machine with workers of its own: register the session so
+    // quitting the app warns about workers that are still running.
+    if (cfg.projectDir) {
+      try { await invoke('mark_session_active', { projectDir: cfg.projectDir }); } catch {}
+    }
     showDashboard();
     return;
   }
@@ -604,10 +615,94 @@ function step3Next() {
   });
   if (!ok) return;
   if (updated.length === 0) { toast('Add at least one worker.', true); return; }
-  workers = updated;
-  cfg.cliTemplate = getCliTemplate();
-  cfg.model       = document.getElementById('s3-model').value.trim() || 'opus';
-  goStep(4);
+  const proceed = () => {
+    workers = updated;
+    cfg.cliTemplate = getCliTemplate();
+    cfg.model       = document.getElementById('s3-model').value.trim() || 'opus';
+    goStep(4);
+  };
+  if (!cfg.joinOnly) { proceed(); return; }
+  // On a team that other machines are part of, a worker name may already
+  // be someone. Two members with one name would fight over its messages,
+  // so say so here instead of failing halfway through the launch.
+  workerNamesTaken(updated.map(w => w.name)).then(taken => {
+    if (taken.length) {
+      toast(`"${taken[0]}" is already a member of this team. Give this worker a different name.`, true);
+      return;
+    }
+    proceed();
+  });
+}
+
+// Which of `names` are already on the team's roster. A roster that cannot
+// be read takes nothing: the launch reports an unreachable server itself.
+async function workerNamesTaken(names) {
+  try {
+    const res = await fetch(cfg.serverUrl.replace(/\/+$/, '') + '/roster', {
+      headers: { Authorization: `Bearer ${cfg.token}` },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return [];
+    const onTeam = new Set((await res.json()).map(w => w.instance_id));
+    return names.filter(n => onTeam.has(n) && !launchedWorkerNames.has(n));
+  } catch (_) {
+    return [];
+  }
+}
+
+// The name of the team this machine's token belongs to, or '' when the
+// server cannot say (unreachable, or too old to have /team).
+async function fetchTeamName(url, token) {
+  try {
+    const res = await fetch(url.replace(/\/+$/, '') + '/team', {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!res.ok) return '';
+    const data = await res.json().catch(() => ({}));
+    return typeof data.name === 'string' ? data.name : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+// ── Workers on a joined machine ───────────────────────────────────────────────
+// Open the wizard at the project folder step. Everything before it (which
+// team, which server, who you are) was settled when this machine joined.
+async function openLocalWorkerSetup() {
+  if (!cfg.teamName) {
+    const name = await fetchTeamName(cfg.serverUrl, cfg.token);
+    if (!name) {
+      toast(
+        "The server did not say which team this machine is in, so workers can't be set up yet. " +
+        'Check that the server is reachable and up to date, then try again.', true);
+      return;
+    }
+    cfg.teamName = name;
+  }
+  addingLocalWorkers = true;
+  dashboardActive = false;
+  const wiz  = document.getElementById('wizard');
+  const dash = document.getElementById('dashboard');
+  dash.classList.remove('visible');
+  setTimeout(() => {
+    dash.hidden = true;
+    wiz.hidden = false;
+    wiz.classList.remove('exiting');
+    teardownDashboard();
+    prefillWizard();
+    resetLaunchBtn();
+    document.getElementById('open-dash-btn').hidden = true;
+    goStep(2);
+  }, 350);
+}
+
+// Leave worker setup without changing anything. The folder picked on the
+// way is forgotten, because nothing was launched in it.
+function cancelLocalWorkerSetup() {
+  addingLocalWorkers = false;
+  cfg.projectDir = '';
+  toDashboard();
 }
 
 function getCliTemplate() {
@@ -996,6 +1091,15 @@ async function doLaunch() {
     resetLaunchBtn();
     return;
   } else if (probeStatus === null) {
+    if (cfg.joinOnly) {
+      // A joined machine never starts a server, whatever the address.
+      setLaunchItem('li-server', 'error', 'server unreachable');
+      appendLaunchLog(
+        "✗ Can't reach the team's server at " + cfg.serverUrl + '. Check that it is ' +
+        'running and that this machine can reach it, then launch again.', true);
+      resetLaunchBtn();
+      return;
+    }
     if (!isLocalServerUrl(cfg.serverUrl)) {
       // Another machine didn't answer. Starting a server here would not
       // make that address work; it would only hide the real problem.
@@ -1097,6 +1201,7 @@ async function doLaunch() {
   // Step 4: collab start all
   setLaunchItem('li-workers', 'running');
   appendLaunchLog('Running: collab start all', false);
+  for (const w of workers) launchedWorkerNames.add(w.name);
   try {
     const code = await invoke('run_command', {
       program: 'collab',
@@ -1117,6 +1222,7 @@ async function doLaunch() {
 
   // Save config
   cfg.setupComplete = true;
+  addingLocalWorkers = false;
   try {
     // Persist the full config including the token. The token lives in a
     // user-only file under ~/.config/hold-my-beer-gui/ — the same trust level
@@ -1228,24 +1334,22 @@ function goToWizard() {
 }
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-// A joined machine runs no server and no workers, so the controls for
-// those are hidden rather than left to fail.
-const LOCAL_ONLY_CONTROLS = ['btn-start-server', 'btn-stop-server', 'btn-start-workers', 'btn-stop-workers', 'btn-broadcast-stop'];
+// A joined machine never runs the server, so those buttons are hidden
+// rather than left to fail. It has worker controls once it has set up
+// workers of its own; until then it is offered that setup instead.
+const SERVER_CONTROLS = ['btn-start-server', 'btn-stop-server'];
+const WORKER_CONTROLS = ['btn-start-workers', 'btn-stop-workers', 'btn-broadcast-stop'];
 
 function applyJoinOnlyUi() {
-  if (cfg.joinOnly) {
-    for (const id of LOCAL_ONLY_CONTROLS) {
-      const el = document.getElementById(id);
-      if (el) el.hidden = true;
-    }
-  } else {
-    // Server buttons are owned by pollServerStatus; only the worker
-    // buttons need restoring after a switch back from join mode.
-    for (const id of ['btn-start-workers', 'btn-stop-workers', 'btn-broadcast-stop']) {
-      const el = document.getElementById(id);
-      if (el) el.hidden = false;
-    }
-  }
+  const show = (id, visible) => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !visible;
+  };
+  // On a machine that hosts its team, pollServerStatus owns these two.
+  if (cfg.joinOnly) for (const id of SERVER_CONTROLS) show(id, false);
+  const hasWorkers = !cfg.joinOnly || !!cfg.projectDir;
+  for (const id of WORKER_CONTROLS) show(id, hasWorkers);
+  show('btn-add-local-workers', cfg.joinOnly && !cfg.projectDir);
 }
 
 function showDashboard() {
@@ -2732,7 +2836,13 @@ window.__wizard = {
 
   // Generic "goStep" back buttons — any element with data-goto="N"
   document.querySelectorAll('[data-goto]').forEach(el => {
-    el.addEventListener('click', () => goStep(parseInt(el.dataset.goto, 10)));
+    el.addEventListener('click', () => {
+      const n = parseInt(el.dataset.goto, 10);
+      // Worker setup on a joined machine starts at step 2, so "back to
+      // step 1" means back to the dashboard.
+      if (addingLocalWorkers && n === 1) { cancelLocalWorkerSetup(); return; }
+      goStep(n);
+    });
   });
 
   // Step 3 tool dropdown
@@ -2743,6 +2853,7 @@ window.__wizard = {
   on('btn-start-server',  'click', doStartServer);
   on('btn-stop-server',   'click', doStopServer);
   on('btn-start-workers', 'click', doStartWorkers);
+  on('btn-add-local-workers', 'click', openLocalWorkerSetup);
   on('btn-stop-workers',  'click', doStopWorkers);
   on('btn-toggle-log',    'click', toggleServerLog);
   on('btn-toggle-usage',  'click', toggleUsage);
