@@ -254,3 +254,25 @@ test('a machine starting its own team still reads as before', async ({ page }) =
   await expect(page.locator('#li-server .li-label')).toHaveText('Starting collab-server');
   await expect(page.locator('#feed-empty')).toContainText('start the server');
 });
+
+// A step that is hidden while one of its fields holds focus leaves focus on
+// nothing. Assistive tools follow focus, so each step change moves it to the
+// heading of the step now on screen.
+test('changing step moves focus to the new step heading', async ({ page }) => {
+  await mockTauri(page);
+  await page.goto('/');
+  await page.locator('#btn-add-local-workers').click();
+  await expect(page.locator('#step-2')).toHaveClass(/active/);
+  await expect(page.locator('#step-2 .step-title')).toBeFocused();
+
+  await page.evaluate(() => { document.getElementById('s2-dir').value = '/home/deck/proj'; });
+  await page.locator('#btn-step2-next').click();
+  await expect(page.locator('#step-3 .step-title')).toBeFocused();
+
+  // Leave focus in a field of the step that is about to be hidden.
+  await page.locator('.worker-card .wc-name').first().fill('deck-builder');
+  await page.locator('.worker-card .wc-name').first().focus();
+  await page.locator('#btn-step3-next').click();
+  await expect(page.locator('#step-4')).toHaveClass(/active/);
+  await expect(page.locator('#step-4 .step-title')).toBeFocused();
+});

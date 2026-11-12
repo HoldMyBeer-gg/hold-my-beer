@@ -419,6 +419,17 @@ function goStep(n) {
     const s = i + 1;
     d.className = 'wiz-dot ' + (s < n ? 'done' : s === n ? 'active' : '');
   });
+
+  // The step just hidden may have held focus, which would leave it on
+  // nothing. Put it on the heading of the step now on screen, so keyboard
+  // and assistive tools land where the content is.
+  if (n !== prev) {
+    const title = document.querySelector(`#step-${n} .step-title`);
+    if (title) {
+      title.tabIndex = -1;
+      title.focus({ preventScroll: true });
+    }
+  }
 }
 
 function updateWizardStep1Nav() {
