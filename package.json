@@ -1,5 +1,5 @@
 {
   "dependencies": {
-    "lighthouse": "^13.0.3"
+    "lighthouse": "^13.6.0"
   }
 }
