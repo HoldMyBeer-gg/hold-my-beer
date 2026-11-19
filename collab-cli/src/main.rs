@@ -1000,7 +1000,6 @@ async fn main() -> Result<()> {
         | Commands::Whoami
         | Commands::Role { .. } => unreachable!(),
         #[allow(unreachable_patterns)]
-        #[allow(unreachable_patterns)]
         _ => unreachable!(),
     }
 
