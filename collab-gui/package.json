@@ -11,12 +11,12 @@
     "minify": "cleancss -o public/app.min.css public/app.css && cleancss -o public/app-panels.min.css public/app-panels.css && terser public/app.js -c -m --source-map -o public/app.min.js && terser public/app-panels.js -c -m --source-map -o public/app-panels.min.js && node inline-css.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0",
-    "@tauri-apps/cli": "^2",
-    "chrome-launcher": "^1.2.1",
+    "@playwright/test": "^1.65.1",
+    "@tauri-apps/cli": "^2.12.6",
+    "chrome-launcher": "^1.2.3",
     "clean-css-cli": "^5.6.3",
     "csso": "^5.0.5",
-    "lighthouse": "^13.1.0",
-    "terser": "^5.46.1"
+    "lighthouse": "^13.6.0",
+    "terser": "^5.51.2"
   }
 }
