@@ -26,6 +26,21 @@ use collab_server::{AppState, BroadcastMsg, create_app, db};
 use tempfile::TempDir;
 use tokio::sync::broadcast;
 
+/// `collab-server` belongs to another package, so Cargo does not set
+/// `CARGO_BIN_EXE_collab-server` here. Both binaries land in the same
+/// target directory, so look next to `collab`. Run `cargo build --workspace`
+/// first.
+fn server_bin() -> std::path::PathBuf {
+    let path = std::path::Path::new(env!("CARGO_BIN_EXE_collab"))
+        .with_file_name(format!("collab-server{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.exists(),
+        "{} is missing: run `cargo build --workspace` first",
+        path.display()
+    );
+    path
+}
+
 const ADMIN_TOKEN: &str = "admin-test-secret";
 
 async fn start_server() -> String {
@@ -383,8 +398,7 @@ async fn admin_token_and_team_token_coexist_via_separate_env_vars() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn server_no_token_error_mentions_init_env() {
     let tmp = TempDir::new().unwrap();
-    let out = Command::cargo_bin("collab-server")
-        .expect("collab-server is built by another package: run `cargo build --workspace` first")
+    let out = Command::new(server_bin())
         .env_remove("COLLAB_TOKEN")
         .env_remove("COLLAB_ADMIN_TOKEN")
         .env("HOME", tmp.path()) // no ~/.collab.toml
@@ -413,8 +427,7 @@ async fn server_no_token_error_mentions_init_env() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn init_env_writes_admin_token_env_var_not_plain_token() {
     let tmp = TempDir::new().unwrap();
-    let out = Command::cargo_bin("collab-server")
-        .expect("collab-server is built by another package: run `cargo build --workspace` first")
+    let out = Command::new(server_bin())
         .args(["--init-env"])
         .env("HOME", tmp.path())
         .env("COLLAB_HOME", tmp.path())
